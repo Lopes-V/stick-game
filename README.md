@@ -34,6 +34,13 @@ python tools/lan_http_server.py --directory web_build --port 8080
 
 O cliente Web deriva o WebSocket de `window.location.hostname`; não existe IP hardcoded. As portas, limite de jogadores, início do Chaos e pontuação ficam em `server_config.json`.
 
+O servidor mantém a física authoritative a 60 Hz. O cliente captura comandos de
+movimento a 60 Hz, agrupa dois comandos por pacote e envia 30 pacotes/s; o
+servidor continua publicando 30 snapshots/s. O jogador local usa prediction e
+reconciliation pelos números de sequência confirmados, enquanto jogadores
+remotos são exibidos com um buffer de interpolação de aproximadamente 50 ms.
+Teletransportes do Void Loop limpam o histórico e são aplicados por snap.
+
 O launcher prepara a exportação **sem threads** para funcionar por HTTP dentro
 da rede privada, sem instalar certificados em cada celular. Controles touch,
 teclado e mouse funcionam nesse modo. Alguns navegadores restringem a Gamepad

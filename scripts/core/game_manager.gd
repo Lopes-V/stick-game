@@ -13,6 +13,9 @@ const ChaosDirectorScript := preload("res://scripts/chaos/chaos_director.gd")
 const EffectBurstScript := preload("res://scripts/effects/effect_burst.gd")
 const CameraManagerScript := preload("res://scripts/core/camera_manager.gd")
 const AudioManagerScript := preload("res://scripts/core/audio_manager.gd")
+const LocalPredictionScript := preload("res://scripts/network/local_prediction_controller.gd")
+
+const MAX_SERVER_INPUT_BACKLOG := 8
 
 var network: NetworkManager
 var config: Dictionary
@@ -44,11 +47,17 @@ var _next_projectile_id := 1
 var _next_prop_id := 1
 var _snapshot_left := 0.0
 var _pending_bombs: Array[Dictionary] = []
+var _server_input_queues: Dictionary = {}
+var _last_received_input_sequences: Dictionary = {}
+var _last_applied_inputs: Dictionary = {}
+var _last_processed_input_sequences: Dictionary = {}
+var _last_processed_client_times: Dictionary = {}
 var _client_round_state: Dictionary = {"state": "lobby", "round": 0, "elapsed": 0.0, "scores": {}}
 var _last_snapshot_tick := 0
 var camera_manager
 var client_chaos_events: Array[String] = []
 var audio_manager: AudioManager
+var local_prediction: LocalPredictionController
 
 func setup(network_manager: NetworkManager, loaded_config: Dictionary, is_server: bool) -> void:
 	network = network_manager
@@ -85,6 +94,10 @@ func setup(network_manager: NetworkManager, loaded_config: Dictionary, is_server
 	audio_manager.name = "AudioManager"
 	add_child(audio_manager)
 	if not server_mode:
+		local_prediction = LocalPredictionScript.new()
+		local_prediction.name = "LocalPredictionController"
+		add_child(local_prediction)
+		local_prediction.setup(self, network)
 		camera_manager = CameraManagerScript.new()
 		camera_manager.name = "CameraManager"
 		add_child(camera_manager)
@@ -93,6 +106,8 @@ func setup(network_manager: NetworkManager, loaded_config: Dictionary, is_server
 func _physics_process(delta: float) -> void:
 	if not server_mode:
 		return
+	_finalize_processed_inputs()
+	_process_server_input_queues()
 	_update_test_bots()
 	round_manager.tick(delta)
 	if round_manager.state in ["countdown", "playing"]:
@@ -120,6 +135,7 @@ func start_match(roster: Array) -> void:
 	network.broadcast_match_event("match_started", {"seed": match_seed})
 
 func prepare_round(roster: Array) -> void:
+	_clear_queued_inputs()
 	clear_round_entities(false)
 	reset_modifiers()
 	void_loop.reset()
@@ -144,6 +160,7 @@ func stop_round_systems() -> void:
 func return_to_lobby() -> void:
 	if not server_mode:
 		return
+	_clear_queued_inputs()
 	clear_round_entities(true)
 	reset_modifiers()
 	chaos_director.stop_all()
@@ -157,9 +174,18 @@ func return_to_lobby() -> void:
 	network.broadcast_match_event("returned_to_lobby", {})
 
 func receive_player_input(player_id: int, input_state: Dictionary) -> void:
-	var player: Player = players.get(player_id)
-	if player:
-		player.set_network_input(input_state)
+	if not server_mode or not players.has(player_id):
+		return
+	var sanitized := _sanitize_input(input_state)
+	if sanitized.is_empty():
+		return
+	var sequence := int(sanitized.sequence)
+	if sequence <= int(_last_received_input_sequences.get(player_id, -1)):
+		return
+	_last_received_input_sequences[player_id] = sequence
+	var queue: Array = _server_input_queues.get(player_id, [])
+	queue.append(sanitized)
+	_server_input_queues[player_id] = queue
 
 func handle_player_disconnect(player_id: int) -> void:
 	var player: Player = players.get(player_id)
@@ -169,6 +195,11 @@ func handle_player_disconnect(player_id: int) -> void:
 		player.alive = false
 		player.queue_free()
 		players.erase(player_id)
+	_server_input_queues.erase(player_id)
+	_last_received_input_sequences.erase(player_id)
+	_last_applied_inputs.erase(player_id)
+	_last_processed_input_sequences.erase(player_id)
+	_last_processed_client_times.erase(player_id)
 	round_manager.handle_disconnect(player_id)
 
 func get_player(player_id: int) -> Player:
@@ -197,6 +228,26 @@ func get_match_state() -> String:
 
 func get_round_state() -> Dictionary:
 	return round_manager.snapshot() if server_mode else _client_round_state
+
+func predict_local_input(command: Dictionary) -> void:
+	if not server_mode and local_prediction:
+		local_prediction.predict_input(command)
+
+func reset_local_prediction() -> void:
+	if not server_mode and local_prediction:
+		local_prediction.reset_prediction()
+
+func get_network_debug_stats() -> Dictionary:
+	if local_prediction:
+		return local_prediction.debug_stats()
+	return {
+		"ping_msec": -1.0,
+		"pending_inputs": 0,
+		"prediction_error": 0.0,
+		"last_acknowledged_sequence": -1,
+		"snapshot_tick": _last_snapshot_tick,
+		"teleport_serial": -1,
+	}
 
 func try_pickup_weapon(player: Player) -> void:
 	if not player.alive:
@@ -443,6 +494,8 @@ func receive_match_event(event_name: String, payload: Dictionary) -> void:
 		_spawn_local_effect(str(payload.type), payload.position, payload.get("data", {}))
 	elif event_name == "arena_reset":
 		map_controller.reset_map()
+		if local_prediction:
+			local_prediction.reset_prediction()
 	elif event_name == "camera_shake" and camera_manager:
 		camera_manager.add_shake(float(payload.get("strength", 2.0)))
 
@@ -472,7 +525,13 @@ func apply_snapshot(snapshot: Dictionary) -> void:
 	if tick <= _last_snapshot_tick:
 		return
 	_last_snapshot_tick = tick
-	_client_round_state = snapshot.get("round", _client_round_state)
+	if local_prediction:
+		local_prediction.note_snapshot(tick)
+	var next_round_state: Dictionary = snapshot.get("round", _client_round_state)
+	var round_changed := int(next_round_state.get("round", 0)) != int(_client_round_state.get("round", 0))
+	_client_round_state = next_round_state
+	if round_changed and local_prediction:
+		local_prediction.reset_prediction()
 	chaos_level = int(snapshot.get("chaos_level", 0))
 	client_chaos_events.clear()
 	for event_name: String in snapshot.get("chaos_events", []):
@@ -482,14 +541,20 @@ func apply_snapshot(snapshot: Dictionary) -> void:
 	blackout = bool(modifiers.get("blackout", false))
 	map_controller.set_moving_platforms(bool(modifiers.get("moving_platforms", false)))
 	map_controller.set_floor_panic(bool(modifiers.get("floor_panic", false)))
-	_sync_players(snapshot.get("players", []))
+	_sync_players(snapshot.get("players", []), tick)
 	_sync_weapons(snapshot.get("weapons", []))
 	_sync_projectiles(snapshot.get("projectiles", []))
 	_sync_props(snapshot.get("props", []))
 
 func _build_snapshot() -> Dictionary:
 	var player_states: Array = []
-	for player: Player in players.values(): player_states.append(player.snapshot())
+	for player: Player in players.values():
+		var state := player.snapshot()
+		state["last_processed_input_sequence"] = int(_last_processed_input_sequences.get(player.player_id, -1))
+		state["last_processed_client_time"] = int(_last_processed_client_times.get(player.player_id, -1))
+		state["grounded"] = player.is_on_floor()
+		state["on_wall"] = player.is_on_wall_only()
+		player_states.append(state)
 	var weapon_states: Array = []
 	for weapon: Weapon in weapons.values(): weapon_states.append(weapon.snapshot())
 	var projectile_states: Array = []
@@ -513,7 +578,7 @@ func _build_snapshot() -> Dictionary:
 		},
 	}
 
-func _sync_players(states: Array) -> void:
+func _sync_players(states: Array, snapshot_tick: int) -> void:
 	var seen: Dictionary = {}
 	for state: Dictionary in states:
 		var id := int(state.id)
@@ -522,8 +587,23 @@ func _sync_players(states: Array) -> void:
 		if player == null:
 			player = _create_player(id, str(state.name), false)
 			player.global_position = Vector2(float(state.x), float(state.y))
-		player.apply_network_state(state)
-	_remove_missing(players, seen)
+			if local_prediction:
+				local_prediction.register_player(player)
+		if local_prediction:
+			if id == network.local_player_id:
+				local_prediction.reconcile_local(state, snapshot_tick)
+			else:
+				local_prediction.push_remote_state(player, state, snapshot_tick)
+		else:
+			player.apply_network_state(state)
+	for id: int in players.keys().duplicate():
+		if not seen.has(id):
+			var player: Player = players[id]
+			if local_prediction:
+				local_prediction.unregister_player(id)
+			if is_instance_valid(player):
+				player.queue_free()
+			players.erase(id)
 
 func _sync_weapons(states: Array) -> void:
 	var seen: Dictionary = {}
@@ -612,6 +692,60 @@ func _process_pending_bombs(delta: float) -> void:
 		if float(bomb.time) <= 0.0:
 			spawn_projectile("chaos_bomb", 0, Vector2(float(bomb.x), MapController.SKY_Y), Vector2.DOWN, rng.randf_range(430, 620), 24.0, 820.0, Color("ff534b"))
 			_pending_bombs.erase(bomb)
+
+func _finalize_processed_inputs() -> void:
+	for player_id: int in _last_applied_inputs:
+		var command: Dictionary = _last_applied_inputs[player_id]
+		_last_processed_input_sequences[player_id] = int(command.get("sequence", -1))
+		_last_processed_client_times[player_id] = int(command.get("client_time", -1))
+	_last_applied_inputs.clear()
+
+func _process_server_input_queues() -> void:
+	if round_manager.state != "playing":
+		return
+	for player_id: int in _server_input_queues.keys():
+		var player: Player = players.get(player_id)
+		if player == null:
+			_server_input_queues.erase(player_id)
+			continue
+		var queue: Array = _server_input_queues[player_id]
+		while queue.size() > MAX_SERVER_INPUT_BACKLOG:
+			var skipped: Dictionary = queue.pop_front()
+			_last_processed_input_sequences[player_id] = int(skipped.get("sequence", -1))
+			_last_processed_client_times[player_id] = int(skipped.get("client_time", -1))
+		if queue.is_empty():
+			continue
+		var command: Dictionary = queue.pop_front()
+		player.set_network_input(command)
+		_last_applied_inputs[player_id] = command
+		_server_input_queues[player_id] = queue
+
+func _clear_queued_inputs() -> void:
+	_server_input_queues.clear()
+	_last_applied_inputs.clear()
+
+func _sanitize_input(input_state: Dictionary) -> Dictionary:
+	var sequence := int(input_state.get("sequence", -1))
+	if sequence < 0:
+		return {}
+	return {
+		"sequence": sequence,
+		"move": _finite_axis(input_state.get("move", 0.0)),
+		"jump": bool(input_state.get("jump", false)),
+		"attack": bool(input_state.get("attack", false)),
+		"pickup": bool(input_state.get("pickup", false)),
+		"throw": bool(input_state.get("throw", false)),
+		"aim_x": _finite_axis(input_state.get("aim_x", 1.0)),
+		"aim_y": _finite_axis(input_state.get("aim_y", 0.0)),
+		"client_tick": int(input_state.get("client_tick", 0)),
+		"client_time": int(input_state.get("client_time", -1)),
+	}
+
+func _finite_axis(value: Variant) -> float:
+	var number := float(value)
+	if is_nan(number) or is_inf(number):
+		return 0.0
+	return clampf(number, -1.0, 1.0)
 
 func _update_test_bots() -> void:
 	for player_id: int in bot_player_ids:

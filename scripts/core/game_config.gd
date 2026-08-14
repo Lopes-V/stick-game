@@ -8,6 +8,7 @@ const DEFAULTS := {
 	"chaos_start_seconds": 30.0,
 	"score_to_win": 5,
 	"network_tick_rate": 30,
+	"input_tick_rate": 60,
 	"round_time_limit": 90.0,
 }
 
