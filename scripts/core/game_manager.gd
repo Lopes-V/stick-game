@@ -527,7 +527,11 @@ func apply_snapshot(snapshot: Dictionary) -> void:
 	_last_snapshot_tick = tick
 	if local_prediction:
 		local_prediction.note_snapshot(tick)
-	_client_round_state = snapshot.get("round", _client_round_state)
+	var next_round_state: Dictionary = snapshot.get("round", _client_round_state)
+	var round_changed := int(next_round_state.get("round", 0)) != int(_client_round_state.get("round", 0))
+	_client_round_state = next_round_state
+	if round_changed and local_prediction:
+		local_prediction.reset_prediction()
 	chaos_level = int(snapshot.get("chaos_level", 0))
 	client_chaos_events.clear()
 	for event_name: String in snapshot.get("chaos_events", []):

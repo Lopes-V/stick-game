@@ -237,6 +237,7 @@ func _simulate_movement(command: Dictionary, delta: float) -> void:
 		if absf(local_player.aim_direction.x) > 0.2:
 			_facing = signf(local_player.aim_direction.x)
 	if not local_player.alive:
+		_update_local_weapon_visual()
 		return
 
 	var move_axis := clampf(float(command.get("move", 0.0)), -1.0, 1.0)
@@ -287,7 +288,17 @@ func _simulate_movement(command: Dictionary, delta: float) -> void:
 	local_player.velocity.x = clampf(local_player.velocity.x, -VoidLoopManager.MAX_HORIZONTAL_SPEED, VoidLoopManager.MAX_HORIZONTAL_SPEED)
 	local_player.velocity.y = minf(local_player.velocity.y, VoidLoopManager.MAX_VERTICAL_SPEED)
 	local_player.move_and_slide()
+	_update_local_weapon_visual()
 	local_player.queue_redraw()
+
+func _update_local_weapon_visual() -> void:
+	if local_player == null or local_player.held_weapon_id <= 0:
+		return
+	var weapon: Weapon = game.weapons.get(local_player.held_weapon_id)
+	if weapon == null or weapon.simulation_enabled:
+		return
+	weapon.global_position = local_player.global_position + local_player.aim_direction * 30.0 + Vector2(0.0, -8.0)
+	weapon.rotation = local_player.aim_direction.angle()
 
 func _apply_player_metadata(player: Player, state: Dictionary) -> void:
 	player.display_name = str(state.get("name", player.display_name))
