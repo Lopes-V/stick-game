@@ -17,6 +17,9 @@ func _ready() -> void:
 	var user_args := OS.get_cmdline_user_args()
 	_apply_network_overrides(user_args)
 	server_mode = user_args.has("--server") or (DisplayServer.get_name() == "headless" and not user_args.has("--client"))
+	if not server_mode and OS.has_feature("web") and _is_mobile_browser():
+		_show_pc_only_screen()
+		return
 
 	network = NetworkManagerScript.new()
 	network.name = "Network"
@@ -97,3 +100,27 @@ func _apply_network_overrides(user_args: PackedStringArray) -> void:
 			config.internal_game_bind = argument.trim_prefix("--server-bind=")
 		if argument.begins_with("--internal-game-port="):
 			config.internal_game_port = int(argument.trim_prefix("--internal-game-port="))
+
+func _is_mobile_browser() -> bool:
+	var result: Variant = JavaScriptBridge.eval(
+		"(() => { const d = navigator.userAgentData; if (d && typeof d.mobile === 'boolean') return d.mobile; return /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini|Mobile/i.test(navigator.userAgent || ''); })()",
+		true
+	)
+	return bool(result)
+
+func _show_pc_only_screen() -> void:
+	var layer := CanvasLayer.new()
+	layer.name = "PcOnlyGate"
+	add_child(layer)
+	var background := ColorRect.new()
+	background.color = Color("07101f")
+	background.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	layer.add_child(background)
+	var message := Label.new()
+	message.text = "CHAOS STICK ARENA\n\nPC ONLY\n\nThis game requires:\nKeyboard + Mouse"
+	message.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	message.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	message.add_theme_font_size_override("font_size", 30)
+	message.add_theme_color_override("font_color", Color("70dcff"))
+	message.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	background.add_child(message)

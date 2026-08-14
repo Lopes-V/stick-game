@@ -1,12 +1,9 @@
 class_name GameUI
 extends CanvasLayer
 
-const TouchControlsScript := preload("res://scripts/ui/touch_controls.gd")
-
 var network: NetworkManager
 var game: GameManager
 var config: Dictionary
-var touch_controls: TouchControls
 
 var lobby_root: Control
 var name_input: LineEdit
@@ -44,11 +41,6 @@ func setup(network_manager: NetworkManager, game_manager: GameManager, loaded_co
 	network.join_rejected.connect(_on_join_rejected)
 	network.lobby_updated.connect(_on_lobby_updated)
 	network.match_event_received.connect(_on_match_event)
-	if _touch_available():
-		touch_controls = TouchControlsScript.new()
-		touch_controls.name = "TouchControls"
-		add_child(touch_controls)
-		touch_controls.visible = false
 
 func set_connection_target(url: String) -> void:
 	_connection_target = url
@@ -70,8 +62,6 @@ func _process(delta: float) -> void:
 		return
 	var match_state := game.get_match_state()
 	hud_root.visible = match_state != "lobby"
-	if touch_controls:
-		touch_controls.visible = match_state == "playing"
 	blackout_overlay.visible = game.blackout and match_state != "lobby"
 	if hud_root.visible:
 		_update_hud()
@@ -178,7 +168,7 @@ func _build_lobby() -> void:
 	help_panel.visible = false
 	lobby_root.add_child(help_panel)
 	var help := Label.new()
-	help.text = "CONTROLS\n\nA / D   Move\nW / Space   Jump\nMouse   Aim\nLeft Click / J   Attack\nRight Click / K   Throw weapon\nE   Pick up\n\nGAMEPAD\nLeft Stick   Move\nA / Cross   Jump\nX / Square   Attack\nB / Circle   Throw\nY / Triangle   Pick up\nRight Stick   Aim\n\nF1–F5   Host debug tools\nF10   Debug overlay"
+	help.text = "CONTROLS — KEYBOARD + MOUSE\n\nA / D   Move\nW / Space   Jump\nMouse   Aim\nLeft Click / J   Attack\nRight Click / K   Throw weapon\nE   Pick up\n\nF1–F5   Host debug tools\nF10   Debug overlay"
 	help.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	help.add_theme_font_size_override("font_size", 17)
 	help_panel.add_child(help)
@@ -367,21 +357,31 @@ func _update_debug() -> void:
 	var ping_text := "n/a"
 	if float(network_stats.get("ping_msec", -1.0)) >= 0.0:
 		ping_text = "%.0f ms" % float(network_stats.ping_msec)
-	debug_label.text = "DEBUG F10\nFPS: %d\nAlive: %d\nChaos: %d\nEvents: %s\nRigid bodies: %d\nProjectiles: %d\nLocal velocity: %s\nPing/ack: %s\nPending inputs: %d\nPrediction error: %.1f px\nLast ack: %d\nTeleport serial: %d\nSeed: %d\nSnapshot tick: %d" % [
-		Engine.get_frames_per_second(), game.get_alive_player_ids().size(), game.chaos_level,
-		", ".join(game.client_chaos_events), game.weapons.size() + game.props.size(),
-		game.projectiles.size(), velocity_text, ping_text, int(network_stats.pending_inputs),
-		float(network_stats.prediction_error), int(network_stats.last_acknowledged_sequence),
-		int(network_stats.teleport_serial), game.match_seed, int(network_stats.snapshot_tick),
+	var loose_weapons := game.weapon_spawner.loose_weapon_count()
+	var draw_calls := int(Performance.get_monitor(Performance.RENDER_TOTAL_DRAW_CALLS_IN_FRAME))
+	var lines: Array[String] = [
+		"DEBUG F10",
+		"FPS: %d" % Engine.get_frames_per_second(),
+		"Physics FPS: %.1f / %d" % [game.measured_physics_fps, Engine.physics_ticks_per_second],
+		"Players: %d (%d alive)" % [game.players.size(), game.get_alive_player_ids().size()],
+		"Weapons: %d (%d loose / limit %d)" % [game.weapons.size(), loose_weapons, game.weapon_spawner.current_weapon_limit()],
+		"Projectiles: %d / %d" % [game.projectiles.size(), GameManager.MAX_ACTIVE_PROJECTILES],
+		"Props: %d" % game.props.size(),
+		"Deliveries: %d" % game.weapon_spawner.active_deliveries.size(),
+		"Combat effects: %d / %d" % [get_tree().get_nodes_in_group("combat_effects").size(), GameManager.MAX_ACTIVE_EFFECTS],
+		"Draw calls: %d" % draw_calls,
+		"Chaos: %d — %s" % [game.chaos_level, ", ".join(game.client_chaos_events)],
+		"Snapshot tick: %d" % int(network_stats.snapshot_tick),
+		"Ping/ack: %s" % ping_text,
+		"Pending inputs: %d" % int(network_stats.pending_inputs),
+		"Prediction error: %.1f px" % float(network_stats.prediction_error),
+		"Last ack: %d" % int(network_stats.last_acknowledged_sequence),
+		"Teleport serial: %d" % int(network_stats.teleport_serial),
+		"Local velocity: %s" % velocity_text,
+		"Seed: %d" % game.match_seed,
 	]
+	debug_label.text = "\n".join(lines)
 
 func _show_notice(text: String, duration: float) -> void:
 	notification_label.text = text
 	_notice_time = duration
-
-func _touch_available() -> bool:
-	if DisplayServer.is_touchscreen_available():
-		return true
-	if OS.has_feature("web"):
-		return bool(JavaScriptBridge.eval("navigator.maxTouchPoints > 0", true))
-	return false

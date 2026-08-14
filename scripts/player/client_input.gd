@@ -4,7 +4,6 @@ extends Node
 var network: NetworkManager
 var game: GameManager
 var game_ui
-var touch_controls: TouchControls
 var sequence := 0
 var input_left := 0.0
 var send_left := 0.0
@@ -15,7 +14,6 @@ func setup(network_manager: NetworkManager, game_manager: GameManager, ui) -> vo
 	network = network_manager
 	game = game_manager
 	game_ui = ui
-	touch_controls = ui.touch_controls
 	if OS.has_feature("web"):
 		JavaScriptBridge.eval("document.addEventListener('contextmenu', function(e){e.preventDefault();});", true)
 
@@ -43,26 +41,15 @@ func _physics_process(delta: float) -> void:
 
 func _capture_input(command_delta: float) -> void:
 	var move_axis := Input.get_axis("move_left", "move_right")
-	var aim := Vector2(Input.get_axis("aim_left", "aim_right"), Input.get_axis("aim_up", "aim_down"))
+	var aim := Vector2.ZERO
 	var jump := Input.is_action_pressed("jump")
 	var attack := Input.is_action_pressed("attack")
 	var pickup := Input.is_action_pressed("pickup")
 	var throw_weapon := Input.is_action_pressed("throw_weapon")
 
-	if touch_controls and touch_controls.visible:
-		if absf(touch_controls.move_value.x) > absf(move_axis):
-			move_axis = touch_controls.move_value.x
-		if touch_controls.aim_value.length_squared() > 0.1:
-			aim = touch_controls.aim_value
-		jump = jump or touch_controls.jump_held
-		attack = attack or touch_controls.attack_held
-		pickup = pickup or touch_controls.pickup_held
-		throw_weapon = throw_weapon or touch_controls.throw_held
-
-	if aim.length_squared() < 0.12:
-		var local_player := game.get_player(network.local_player_id)
-		if local_player:
-			aim = (game.get_global_mouse_position() - local_player.global_position).normalized()
+	var local_player := game.get_player(network.local_player_id)
+	if local_player:
+		aim = (game.get_global_mouse_position() - local_player.global_position).normalized()
 	if aim.length_squared() < 0.12:
 		aim = Vector2.RIGHT
 
