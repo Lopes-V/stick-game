@@ -5,3 +5,6 @@ logs/
 
 
 tools/godot/*.exe
+tools/godot/*.zip
+tools/godot/*.7z
+tools/godot/*.pdb

@@ -6,43 +6,16 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $projectRoot = $PSScriptRoot
+. "$projectRoot\tools\find_godot.ps1"
+. "$projectRoot\tools\launcher_process_job.ps1"
+
 $config = Get-Content -LiteralPath "$projectRoot\server_config.json" -Raw | ConvertFrom-Json
+$gamePort = [int]$config.game_port
+$httpPort = [int]$config.http_port
 $gameProcess = $null
 $httpProcess = $null
-
-function Find-Godot {
-    $candidates = @()
-    # Use the real executable, not the console wrapper. Stopping the wrapper can
-    # otherwise leave the headless child process listening after the launcher exits.
-    $bundledGodot = Join-Path $projectRoot 'tools\godot\Godot_v4.7.1-stable_win64.exe'
-    if (Test-Path -LiteralPath $bundledGodot) { $candidates += $bundledGodot }
-    if ($env:GODOT_EXE) { $candidates += $env:GODOT_EXE }
-    foreach ($commandName in @('godot4', 'godot', 'Godot.exe')) {
-        $command = Get-Command $commandName -ErrorAction SilentlyContinue
-        if ($command) { $candidates += $command.Source }
-    }
-    foreach ($searchRoot in @($projectRoot, "$projectRoot\tools", "$env:USERPROFILE\Downloads", "$env:USERPROFILE\Desktop", "$env:LOCALAPPDATA\Programs")) {
-        if (Test-Path -LiteralPath $searchRoot) {
-            $found = Get-ChildItem -LiteralPath $searchRoot -Filter 'Godot*.exe' -File -Recurse -ErrorAction SilentlyContinue |
-                Where-Object { $_.Name -notmatch 'mono' } |
-                Sort-Object @{ Expression = { $_.Name -match '_console' }; Descending = $false } |
-                Select-Object -First 1
-            if ($found) { $candidates += $found.FullName }
-        }
-    }
-    foreach ($candidate in $candidates) {
-        if ($candidate -and (Test-Path -LiteralPath $candidate)) { return $candidate }
-    }
-    throw 'Godot 4.x not found. Restore tools\godot or put Godot in PATH/set GODOT_EXE.'
-}
-
-function Find-Python {
-    foreach ($commandName in @('python', 'python3', 'py')) {
-        $command = Get-Command $commandName -ErrorAction SilentlyContinue
-        if ($command -and $command.Source -notmatch 'WindowsApps') { return $command.Source }
-    }
-    throw 'Python 3 not found. Install Python or serve web_build with another static HTTP server.'
-}
+$processJob = $null
+$exitCode = 0
 
 function Get-LanAddress {
     try {
@@ -60,60 +33,259 @@ function Get-LanAddress {
     return '127.0.0.1'
 }
 
-function Test-OwnedTcpPort([int]$Port, [int]$ProcessId) {
+function Get-TcpListener {
+    param([int]$Port)
+
+    return Get-NetTCPConnection -State Listen -LocalPort $Port -ErrorAction SilentlyContinue |
+        Select-Object -First 1
+}
+
+function Assert-TcpPortAvailable {
+    param(
+        [int]$Port,
+        [string]$ServiceName
+    )
+
+    $listener = Get-TcpListener -Port $Port
+    if (-not $listener) { return }
+    $processName = 'unknown'
+    try {
+        $owner = Get-Process -Id $listener.OwningProcess -ErrorAction Stop
+        $processName = $owner.ProcessName
+    } catch {}
+    throw "$ServiceName port $Port is already in use by PID $($listener.OwningProcess) ($processName). Stop that process or change server_config.json."
+}
+
+function Test-OwnedTcpPort {
+    param(
+        [int]$Port,
+        [int]$ProcessId
+    )
+
     $listener = Get-NetTCPConnection -State Listen -LocalPort $Port -ErrorAction SilentlyContinue |
         Where-Object { $_.OwningProcess -eq $ProcessId } |
         Select-Object -First 1
     return $null -ne $listener
 }
 
-try {
-    $python = Find-Python
-    if (-not (Test-Path -LiteralPath "$projectRoot\web_build\index.html")) {
-        Write-Host 'Web build missing; building it now...'
-        & "$projectRoot\build_web.ps1"
-    }
-    & $python "$projectRoot\tools\patch_web_build.py" "$projectRoot\web_build\index.html"
-    if ($LASTEXITCODE -ne 0) { throw "LAN Web patch failed with exit code $LASTEXITCODE." }
+function Write-LogTail {
+    param(
+        [string]$Label,
+        [string]$Path,
+        [int]$Lines = 30
+    )
 
-    $godot = Find-Godot
-    $logDir = "$projectRoot\logs"
+    Write-Host "--- $Label ---" -ForegroundColor Yellow
+    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
+        Write-Host '<log file not created>'
+    } elseif ((Get-Item -LiteralPath $Path).Length -eq 0) {
+        Write-Host '<empty>'
+    } else {
+        Get-Content -LiteralPath $Path -Tail $Lines | ForEach-Object { Write-Host $_ }
+    }
+    Write-Host "Full log: $Path"
+}
+
+function Write-ServerFailureLogs {
+    param([string]$LogDirectory)
+
+    Write-Host ''
+    Write-Host 'GAME SERVER FAILED' -ForegroundColor Red
+    Write-Host 'Last server output:'
+    Write-LogTail -Label 'game-server-error.log' -Path "$LogDirectory\game-server-error.log"
+    Write-LogTail -Label 'game-server.log' -Path "$LogDirectory\game-server.log"
+}
+
+function Write-HttpFailureLogs {
+    param([string]$LogDirectory)
+
+    Write-Host ''
+    Write-Host 'HTTP SERVER FAILED' -ForegroundColor Red
+    Write-LogTail -Label 'http-server-error.log' -Path "$LogDirectory\http-server-error.log"
+    Write-LogTail -Label 'http-server.log' -Path "$LogDirectory\http-server.log"
+}
+
+function Stop-LauncherProcess {
+    param(
+        [System.Diagnostics.Process]$Process,
+        [string]$Name
+    )
+
+    if (-not $Process) { return }
+    try {
+        $Process.Refresh()
+        if (-not $Process.HasExited) {
+            $Process.Kill()
+            if (-not $Process.WaitForExit(5000)) {
+                Write-Warning "$Name process PID $($Process.Id) did not exit within 5 seconds."
+            }
+        }
+    } catch {
+        Write-Warning "Unable to stop launcher-owned $Name process PID $($Process.Id): $($_.Exception.Message)"
+    }
+}
+
+function Invoke-GodotProjectValidation {
+    param(
+        [string]$GodotPath,
+        [string]$Root,
+        [string]$LogDirectory,
+        [ChaosStick.LauncherProcessJob]$Job
+    )
+
+    $stdoutPath = "$LogDirectory\project-validation.log"
+    $stderrPath = "$LogDirectory\project-validation-error.log"
+    $quotedRoot = '"' + $Root.Replace('"', '\"') + '"'
+    $arguments = "--headless --editor --path $quotedRoot --quit"
+    Write-Host 'Validating the Godot project...'
+    $validationProcess = Start-Process -FilePath $GodotPath -ArgumentList $arguments `
+        -RedirectStandardOutput $stdoutPath -RedirectStandardError $stderrPath `
+        -WindowStyle Hidden -PassThru
+    $Job.Add($validationProcess)
+    if (-not $validationProcess.WaitForExit(60000)) {
+        Stop-LauncherProcess -Process $validationProcess -Name 'project validation'
+        Write-LogTail -Label 'project-validation-error.log' -Path $stderrPath
+        Write-LogTail -Label 'project-validation.log' -Path $stdoutPath
+        throw 'Godot project validation timed out after 60 seconds.'
+    }
+
+    $parsePattern = 'SCRIPT ERROR|Parse Error|Compile Error|Failed to load script'
+    $parseFailure = Select-String -Path $stdoutPath, $stderrPath -Pattern $parsePattern -ErrorAction SilentlyContinue
+    if ($validationProcess.ExitCode -ne 0 -or $parseFailure) {
+        Write-LogTail -Label 'project-validation-error.log' -Path $stderrPath
+        Write-LogTail -Label 'project-validation.log' -Path $stdoutPath
+        throw "Godot project validation failed with exit code $($validationProcess.ExitCode)."
+    }
+    Write-Host 'Godot project validation: PASS' -ForegroundColor Green
+}
+
+function Wait-ForHostStop {
+    param(
+        [System.Diagnostics.Process]$Game,
+        [System.Diagnostics.Process]$Http
+    )
+
+    Write-Host 'Press ENTER to stop both servers'
+    while ($true) {
+        $Game.Refresh()
+        $Http.Refresh()
+        if ($Game.HasExited) { throw 'Game server exited while the launcher was running.' }
+        if ($Http.HasExited) { throw 'HTTP server exited while the launcher was running.' }
+        $keyAvailable = $false
+        try { $keyAvailable = [Console]::KeyAvailable } catch {}
+        if ($keyAvailable) {
+            $key = [Console]::ReadKey($true)
+            if ($key.Key -eq [ConsoleKey]::Enter) { return }
+        }
+        Start-Sleep -Milliseconds 200
+    }
+}
+
+$logDir = Join-Path $projectRoot 'logs'
+
+try {
+    # Fail before patching/building anything when required tools are unavailable.
+    $python = Find-Python
+    $godotInfo = Find-Godot -ProjectRoot $projectRoot
+    $godot = $godotInfo.Path
+
+    Write-Host "Using Godot: $godot"
+    Write-Host "Godot version: $($godotInfo.Version)"
+    Write-Host "Godot source: $($godotInfo.Source)"
+
+    $requiredWebFiles = @('index.html', 'index.js', 'index.wasm', 'index.pck')
+    $missingWebFiles = @($requiredWebFiles | Where-Object { -not (Test-Path -LiteralPath (Join-Path "$projectRoot\web_build" $_) -PathType Leaf) })
+    if ($missingWebFiles.Count -gt 0) {
+        Write-Host "Web build missing files ($($missingWebFiles -join ', ')); building it now..."
+        & "$projectRoot\build_web.ps1" -GodotExecutable $godot -PythonExecutable $python
+    }
+
+    $patchOutput = @(& $python "$projectRoot\tools\patch_web_build.py" "$projectRoot\web_build\index.html" 2>&1)
+    $patchExitCode = $LASTEXITCODE
+    $patchOutput | ForEach-Object { Write-Host $_ }
+    if ($patchExitCode -ne 0) { throw "LAN Web patch failed with exit code $patchExitCode." }
+    if (-not ($patchOutput -match '^LAN_HTTP_PATCH_(APPLIED|ALREADY_APPLIED)$')) {
+        throw 'LAN Web patch completed without a recognized success marker.'
+    }
+
     New-Item -ItemType Directory -Path $logDir -Force | Out-Null
+    $diagnostics = @(
+        "Using Godot: $godot",
+        "Godot version: $($godotInfo.Version)",
+        "Godot source: $($godotInfo.Source)",
+        "Project root: $projectRoot",
+        "Game port: $gamePort",
+        "HTTP port: $httpPort"
+    )
+    $diagnostics | Set-Content -LiteralPath "$logDir\launcher.log" -Encoding UTF8
+    $diagnostics | ForEach-Object { Write-Host $_ }
+
+    Assert-TcpPortAvailable -Port $gamePort -ServiceName 'Game server'
+    Assert-TcpPortAvailable -Port $httpPort -ServiceName 'HTTP server'
+
+    $processJob = New-LauncherProcessJob
+    Invoke-GodotProjectValidation -GodotPath $godot -Root $projectRoot -LogDirectory $logDir -Job $processJob
 
     $quotedProjectRoot = '"' + $projectRoot.Replace('"', '\"') + '"'
     $gameArguments = "--headless --path $quotedProjectRoot -- --server"
     $httpScript = '"' + "$projectRoot\tools\lan_http_server.py".Replace('"', '\"') + '"'
     $httpDirectory = '"' + "$projectRoot\web_build".Replace('"', '\"') + '"'
-    $httpArguments = "$httpScript --directory $httpDirectory --port $($config.http_port)"
+    $httpArguments = "$httpScript --directory $httpDirectory --port $httpPort"
 
     $gameProcess = Start-Process -FilePath $godot -ArgumentList $gameArguments `
-        -RedirectStandardOutput "$logDir\game-server.log" -RedirectStandardError "$logDir\game-server-error.log" -WindowStyle Hidden -PassThru
+        -RedirectStandardOutput "$logDir\game-server.log" `
+        -RedirectStandardError "$logDir\game-server-error.log" `
+        -WindowStyle Hidden -PassThru
+    $processJob.Add($gameProcess)
+
+    $gameReady = $false
+    foreach ($attempt in 1..40) {
+        $gameProcess.Refresh()
+        if ($gameProcess.HasExited) { throw 'Game server exited before opening its WebSocket port.' }
+        if (Test-OwnedTcpPort -Port $gamePort -ProcessId $gameProcess.Id) {
+            $gameReady = $true
+            break
+        }
+        Start-Sleep -Milliseconds 150
+    }
+    if (-not $gameReady) { throw "Game server did not open port $gamePort within 6 seconds." }
+
     $httpProcess = Start-Process -FilePath $python -ArgumentList $httpArguments `
-        -RedirectStandardOutput "$logDir\http-server.log" -RedirectStandardError "$logDir\http-server-error.log" -WindowStyle Hidden -PassThru
+        -RedirectStandardOutput "$logDir\http-server.log" `
+        -RedirectStandardError "$logDir\http-server-error.log" `
+        -WindowStyle Hidden -PassThru
+    $processJob.Add($httpProcess)
 
     $healthy = $false
     foreach ($attempt in 1..50) {
-        if ($gameProcess.HasExited) { throw "Game server exited early. Read logs/game-server-error.log." }
-        if ($httpProcess.HasExited) { throw "HTTP server exited early. Read logs/http-server-error.log." }
+        $gameProcess.Refresh()
+        $httpProcess.Refresh()
+        if ($gameProcess.HasExited) { throw 'Game server exited during health check.' }
+        if ($httpProcess.HasExited) { throw 'HTTP server exited during health check.' }
         $httpOk = $false
         try {
-            $httpResponse = Invoke-WebRequest -UseBasicParsing -Uri "http://127.0.0.1:$($config.http_port)/status" -TimeoutSec 1
+            $httpResponse = Invoke-WebRequest -UseBasicParsing -Uri "http://127.0.0.1:$httpPort/status" -TimeoutSec 1
             $httpOk = $httpResponse.StatusCode -eq 200 -and [string]$httpResponse.Headers['Server'] -like 'ChaosStickHTTP/*'
         } catch {}
-        $httpOwned = Test-OwnedTcpPort ([int]$config.http_port) $httpProcess.Id
-        $gameOwned = Test-OwnedTcpPort ([int]$config.game_port) $gameProcess.Id
-        if ($httpOk -and $httpOwned -and $gameOwned) { $healthy = $true; break }
+        $httpOwned = Test-OwnedTcpPort -Port $httpPort -ProcessId $httpProcess.Id
+        $gameOwned = Test-OwnedTcpPort -Port $gamePort -ProcessId $gameProcess.Id
+        if ($httpOk -and $httpOwned -and $gameOwned) {
+            $healthy = $true
+            break
+        }
         Start-Sleep -Milliseconds 200
     }
     if (-not $healthy) { throw 'Health check failed: HTTP or WebSocket server did not become available.' }
 
     $lanIp = Get-LanAddress
-    $roomUrl = "http://${lanIp}:$($config.http_port)"
-    $localUrl = "http://localhost:$($config.http_port)"
+    $roomUrl = "http://${lanIp}:$httpPort"
+    $localUrl = "http://localhost:$httpPort"
     Clear-Host
     Write-Host '========================================' -ForegroundColor Cyan
     Write-Host '        CHAOS STICK ARENA' -ForegroundColor Cyan
     Write-Host '========================================' -ForegroundColor Cyan
+    Write-Host "Godot:      $godot"
+    Write-Host "Version:    $($godotInfo.Version)"
     Write-Host 'Game Server: ONLINE' -ForegroundColor Green
     Write-Host 'Web Server:  ONLINE' -ForegroundColor Green
     Write-Host "Players:     0/$($config.max_players)"
@@ -124,19 +296,36 @@ try {
     Write-Host ''
     Write-Host "Host browser: $localUrl"
     Write-Host 'Send the ROOM LINK to players on the same Wi-Fi/Ethernet.'
-    Write-Host 'If access fails, allow TCP ports 8080 and 9000 in Windows Firewall.'
+    Write-Host "If access fails, allow TCP ports $httpPort and $gamePort in Windows Firewall."
     Write-Host '========================================' -ForegroundColor Cyan
     if ($HealthCheckOnly) {
         Write-Host 'HOST_HEALTH_CHECK_PASS' -ForegroundColor Green
-        return
+    } else {
+        if (-not $NoBrowser) { Start-Process $localUrl }
+        Wait-ForHostStop -Game $gameProcess -Http $httpProcess
     }
-    if (-not $NoBrowser) { Start-Process $localUrl }
-    Read-Host 'Press ENTER to stop both servers'
+} catch {
+    $exitCode = 1
+    $failureMessage = $_.Exception.Message
+    Write-Host ''
+    Write-Host 'HOST FAILED' -ForegroundColor Red
+    Write-Host $failureMessage -ForegroundColor Red
+    $gameExited = $false
+    $httpExited = $false
+    if ($gameProcess) { try { $gameProcess.Refresh(); $gameExited = $gameProcess.HasExited } catch { $gameExited = $true } }
+    if ($httpProcess) { try { $httpProcess.Refresh(); $httpExited = $httpProcess.HasExited } catch { $httpExited = $true } }
+    if ($gameProcess -and ($gameExited -or $failureMessage -match 'Game server|WebSocket|Health check')) {
+        Write-ServerFailureLogs -LogDirectory $logDir
+    }
+    if ($httpProcess -and ($httpExited -or $failureMessage -match 'HTTP server|Health check')) {
+        Write-HttpFailureLogs -LogDirectory $logDir
+    }
 } finally {
-    $startedAnyProcess = $false
-    if ($httpProcess) { $startedAnyProcess = $true }
-    if ($gameProcess) { $startedAnyProcess = $true }
-    if ($httpProcess -and -not $httpProcess.HasExited) { Stop-Process -Id $httpProcess.Id -Force }
-    if ($gameProcess -and -not $gameProcess.HasExited) { Stop-Process -Id $gameProcess.Id -Force }
+    $startedAnyProcess = $null -ne $gameProcess -or $null -ne $httpProcess
+    Stop-LauncherProcess -Process $httpProcess -Name 'HTTP server'
+    Stop-LauncherProcess -Process $gameProcess -Name 'game server'
+    if ($processJob) { $processJob.Dispose() }
     if ($startedAnyProcess) { Write-Host 'Chaos Stick Arena host stopped.' }
 }
+
+if ($exitCode -ne 0) { exit $exitCode }

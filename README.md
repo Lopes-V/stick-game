@@ -4,10 +4,7 @@ Arena fighter 2D para 2–4 jogadores na mesma rede local. O host roda uma simul
 
 ## Requisitos
 
-- No Windows, a distribuição portátil pode incluir a Godot 4.7.1 em
-  `tools/godot`. Em um checkout somente do código, instale Godot 4.x ou defina
-  `GODOT_EXE`; o launcher também procura `godot4`, `godot` e `Godot.exe` no
-  `PATH`.
+- Godot 4.x configurada por uma das opções abaixo.
 - Python 3 apenas para o servidor HTTP do launcher LAN.
 - Para editar o projeto, use Godot 4.x. Para refazer `web_build/`, também são
   necessários os templates oficiais de exportação Web.
@@ -15,12 +12,51 @@ Arena fighter 2D para 2–4 jogadores na mesma rede local. O host roda uma simul
 
 Não há plugins, pacotes, assets ou serviços externos obrigatórios.
 
+## Godot no Windows
+
+O executável da Godot não está versionado. O launcher valida cada candidato com
+`--version`, aceita versões Godot 4.x compatíveis e rejeita wrappers
+`*_console.exe`, builds Mono/headless e caminhos quebrados.
+
+### Opção A — Godot no PATH
+
+Instale a Godot 4.x e disponibilize `godot4`, `godot` ou `Godot.exe` no `PATH`.
+Para conferir no PowerShell:
+
+```powershell
+Get-Command godot4, godot, Godot.exe -ErrorAction SilentlyContinue
+```
+
+### Opção B — variável GODOT_EXE
+
+Informe o caminho completo do executável principal para a sessão atual e inicie
+o host na mesma janela:
+
+```powershell
+$env:GODOT_EXE = "C:\Godot\Godot_v4.7.1-stable_win64.exe"
+.\HOST_GAME.bat
+```
+
+O nome e a versão podem variar; o requisito é ser uma Godot 4.x válida.
+
+### Opção C — Godot portátil
+
+Coloque o executável principal portátil diretamente em `tools/godot/`, por
+exemplo `tools/godot/Godot_v4.7.1-stable_win64.exe`. Não é necessário usar esse
+nome exato. O arquivo correspondente `_console.exe` não funciona sozinho.
+
+Executáveis e arquivos compactados da engine em `tools/godot/` são
+intencionalmente ignorados pelo Git. Se nenhuma instalação válida for encontrada,
+o launcher encerra antes do build/patch e mostra essas três opções.
+
 ## Como executar
 
 Fluxo recomendado no Windows:
 
 1. Dê duplo clique em `HOST_GAME.bat`.
-2. O launcher valida a build Web, inicia o servidor Godot headless na porta `9000`, inicia HTTP na `8080` e só então mostra `ONLINE`.
+2. O launcher valida Python e Godot, verifica o projeto e a build Web, inicia o
+   servidor Godot headless na porta `9000`, inicia HTTP na `8080` e só então
+   mostra `ONLINE`.
 3. O navegador do host abre `http://localhost:8080`.
 4. Envie o link `http://IP_DA_LAN:8080` mostrado na tela para 1–3 pessoas na mesma rede.
 5. Todos informam o nome, marcam `READY`, e o primeiro navegador (host da sala) usa `START GAME`.
@@ -59,7 +95,10 @@ não depende de arquivos de áudio.
 
 ## Build Web
 
-No Windows, execute `BUILD_WEB.bat`; no Linux, `./build_web.sh`. Ambos usam o preset `Web` de `export_presets.cfg` e geram `web_build/index.html` e os arquivos `.js`, `.wasm` e `.pck` correspondentes.
+No Windows, execute `BUILD_WEB.bat`; no Linux, `./build_web.sh`. Ambos usam o
+preset `Web` de `export_presets.cfg` e geram `web_build/index.html` e os arquivos
+`.js`, `.wasm` e `.pck` correspondentes. `build_web.ps1` usa a mesma descoberta e
+validação robusta de Godot do launcher.
 
 ## Controles
 
@@ -112,6 +151,14 @@ O último jogador vivo marca um ponto. A arena, modificadores, objetos temporár
 O HTTP usa `8080/TCP`; o jogo WebSocket usa `9000/TCP`. O launcher não altera o Windows Firewall. Caso outro aparelho não conecte, confirme que ambos estão na mesma rede, que a rede do Windows está como privada e permita manualmente a Godot/Python ou essas duas portas. Redes de convidados podem bloquear comunicação entre dispositivos.
 
 ## Validação rápida
+
+Descoberta da Godot no Windows:
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\tools\test_godot_discovery.ps1
+```
+
+Projeto e gameplay:
 
 ```text
 godot --headless --editor --path . --quit
