@@ -1,10 +1,10 @@
 class_name CameraManager
 extends Camera2D
 
-const BASE_POSITION := Vector2(800.0, 470.0)
-const MIN_ZOOM := 0.66
-const MAX_ZOOM := 1.02
-const MAX_SHAKE_PIXELS := 15.0
+const BASE_POSITION := Vector2(680.0, 450.0)
+const MIN_ZOOM := 0.74
+const MAX_ZOOM := 1.08
+const MAX_SHAKE_PIXELS := 13.0
 const TELEPORT_GRACE := 0.42
 
 var game
@@ -21,12 +21,12 @@ var _teleport_grace: Dictionary = {}
 func setup(game_manager) -> void:
 	game = game_manager
 	position = BASE_POSITION
-	zoom = Vector2(0.78, 0.78)
+	zoom = Vector2(0.92, 0.92)
 	position_smoothing_enabled = false
 	limit_left = -80
-	limit_right = 1680
+	limit_right = 1440
 	limit_top = -260
-	limit_bottom = 1010
+	limit_bottom = 940
 	make_current()
 
 func _process(delta: float) -> void:
@@ -67,7 +67,7 @@ func _update_framing(delta: float) -> void:
 		clampf(average_velocity.y * 0.045, -34.0, 34.0)
 	)
 	var center := (min_point + max_point) * 0.5 + look_ahead
-	var desired_position := Vector2(clampf(center.x, 480.0, 1120.0), clampf(center.y, 280.0, 650.0))
+	var desired_position := Vector2(clampf(center.x, 430.0, 930.0), clampf(center.y, 250.0, 640.0))
 	var center_weight := 1.0 - exp(-4.4 * delta)
 	var smoothed_position := position.lerp(desired_position, center_weight)
 	position = position.move_toward(smoothed_position, 560.0 * delta)

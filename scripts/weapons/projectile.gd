@@ -15,6 +15,7 @@ var last_teleport_serial := 0
 var color := Color.WHITE
 var _visual_spin := 0.0
 var _animation_time := 0.0
+var _resolved := false
 
 func setup(game_manager, id: int, type: String, owner_id: int, direction: Vector2, speed: float, shot_damage: float, shot_force: float, authoritative: bool, shot_color: Color) -> void:
 	game = game_manager
@@ -53,13 +54,16 @@ func setup(game_manager, id: int, type: String, owner_id: int, direction: Vector
 	queue_redraw()
 
 func _physics_process(delta: float) -> void:
+	if _resolved:
+		return
 	_animation_time += delta
 	if projectile_type in ["grenade", "chaos_bomb"]:
 		var spin_direction := signf(velocity.x) if absf(velocity.x) > 1.0 else 1.0
 		_visual_spin += spin_direction * clampf(velocity.length() / 58.0, 5.0, 18.0) * delta
 	if not simulation_enabled:
 		global_position = global_position.lerp(target_position, clampf(delta * 22.0, 0.0, 1.0))
-		queue_redraw()
+		if _needs_continuous_redraw():
+			queue_redraw()
 		return
 
 	lifetime -= delta
@@ -67,7 +71,7 @@ func _physics_process(delta: float) -> void:
 		if projectile_type in ["grenade", "chaos_bomb"]:
 			_explode()
 		else:
-			game.remove_projectile(projectile_id)
+			_finish()
 		return
 
 	if projectile_type in ["grenade", "chaos_bomb"]:
@@ -76,14 +80,22 @@ func _physics_process(delta: float) -> void:
 	var collision := move_and_collide(velocity * delta)
 	if collision:
 		_handle_collision(collision)
+		if _resolved:
+			return
 	if projectile_type in ["rocket", "grenade", "chaos_bomb"]:
 		game.void_loop.process_body(self)
-	queue_redraw()
+	if _is_outside_relevant_area():
+		_finish()
+		return
+	if DisplayServer.get_name() != "headless" and _needs_continuous_redraw():
+		queue_redraw()
 
 func apply_network_state(state: Dictionary) -> void:
 	projectile_type = str(state.type)
 	target_position = Vector2(float(state.x), float(state.y))
 	velocity = Vector2(float(state.vx), float(state.vy))
+	if not _needs_continuous_redraw():
+		queue_redraw()
 	var serial := int(state.get("t", 0))
 	if serial != last_teleport_serial:
 		global_position = target_position
@@ -108,7 +120,7 @@ func _handle_collision(collision: KinematicCollision2D) -> void:
 		else:
 			_emit_impact("impact_player", collision, force)
 			player.apply_hit(damage, velocity.normalized() * force, owner_player_id)
-			game.remove_projectile(projectile_id)
+			_finish()
 	elif collider is PhysicsProp:
 		(collider as PhysicsProp).take_damage(damage, velocity.normalized() * force * 0.75)
 		if projectile_type in ["rocket", "chaos_bomb"]:
@@ -118,7 +130,7 @@ func _handle_collision(collision: KinematicCollision2D) -> void:
 			_bounce(collision)
 		else:
 			_emit_impact("impact_object", collision, force)
-			game.remove_projectile(projectile_id)
+			_finish()
 	elif projectile_type in ["grenade", "chaos_bomb"] and bounces_left > 0:
 		_emit_impact("impact_wall", collision, force * 0.38)
 		_bounce(collision)
@@ -130,18 +142,38 @@ func _handle_collision(collision: KinematicCollision2D) -> void:
 		velocity = velocity.bounce(collision.get_normal())
 	else:
 		_emit_impact("impact_wall", collision, force)
-		game.remove_projectile(projectile_id)
+		_finish()
 
 func _bounce(collision: KinematicCollision2D) -> void:
 	bounces_left -= 1
 	velocity = velocity.bounce(collision.get_normal()) * 0.68
+	queue_redraw()
 
 func _explode() -> void:
-	if is_queued_for_deletion():
+	if _resolved or is_queued_for_deletion():
 		return
+	_resolved = true
 	var radius := 190.0 if projectile_type == "rocket" else 150.0
 	game.explode(global_position, radius, force, damage, owner_player_id)
 	game.remove_projectile(projectile_id)
+
+func _finish() -> void:
+	if _resolved:
+		return
+	_resolved = true
+	velocity = Vector2.ZERO
+	set_physics_process(false)
+	game.remove_projectile(projectile_id)
+
+func _is_outside_relevant_area() -> bool:
+	if global_position.x < -280.0 or global_position.x > MapController.ARENA_WIDTH + 280.0:
+		return true
+	if projectile_type in ["rocket", "grenade", "chaos_bomb"]:
+		return false
+	return global_position.y < MapController.SKY_Y - 520.0 or global_position.y > MapController.VOID_BOTTOM + 220.0
+
+func _needs_continuous_redraw() -> bool:
+	return projectile_type in ["rocket", "grenade", "chaos_bomb"]
 
 func _emit_impact(effect_type: String, collision: KinematicCollision2D, impact_power: float) -> void:
 	var normal := collision.get_normal()

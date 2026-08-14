@@ -16,7 +16,8 @@ const AudioManagerScript := preload("res://scripts/core/audio_manager.gd")
 const LocalPredictionScript := preload("res://scripts/network/local_prediction_controller.gd")
 
 const MAX_SERVER_INPUT_BACKLOG := 8
-const MAX_ACTIVE_EFFECTS := 64
+const MAX_ACTIVE_EFFECTS := 28
+const MAX_ACTIVE_PROJECTILES := 64
 
 var network: NetworkManager
 var config: Dictionary
@@ -59,6 +60,9 @@ var camera_manager
 var client_chaos_events: Array[String] = []
 var audio_manager: AudioManager
 var local_prediction: LocalPredictionController
+var measured_physics_fps := 0.0
+var _debug_physics_ticks := 0
+var _debug_physics_elapsed := 0.0
 
 func setup(network_manager: NetworkManager, loaded_config: Dictionary, is_server: bool) -> void:
 	network = network_manager
@@ -94,6 +98,7 @@ func setup(network_manager: NetworkManager, loaded_config: Dictionary, is_server
 	audio_manager = AudioManagerScript.new()
 	audio_manager.name = "AudioManager"
 	add_child(audio_manager)
+	audio_manager.setup(self)
 	if not server_mode:
 		local_prediction = LocalPredictionScript.new()
 		local_prediction.name = "LocalPredictionController"
@@ -105,6 +110,12 @@ func setup(network_manager: NetworkManager, loaded_config: Dictionary, is_server
 		camera_manager.setup(self)
 
 func _physics_process(delta: float) -> void:
+	_debug_physics_ticks += 1
+	_debug_physics_elapsed += delta
+	if _debug_physics_elapsed >= 0.5:
+		measured_physics_fps = float(_debug_physics_ticks) / _debug_physics_elapsed
+		_debug_physics_ticks = 0
+		_debug_physics_elapsed = 0.0
 	if not server_mode:
 		return
 	_finalize_processed_inputs()
@@ -370,7 +381,7 @@ func spawn_weapon(weapon_type: String, at_position: Vector2) -> Weapon:
 	return weapon
 
 func spawn_projectile(type: String, owner_id: int, at_position: Vector2, direction: Vector2, speed: float, damage: float, force: float, color: Color) -> Projectile:
-	if projectiles.size() >= 120:
+	if projectiles.size() >= MAX_ACTIVE_PROJECTILES:
 		var oldest_id := int(projectiles.keys()[0])
 		remove_projectile(oldest_id)
 	var projectile: Projectile = ProjectileScript.new()
@@ -687,10 +698,8 @@ func _create_player(player_id: int, display_name: String, authoritative: bool) -
 
 func _spawn_default_props() -> void:
 	var definitions := [
-		["crate", Vector2(420, 450)], ["crate", Vector2(470, 430)],
-		["barrel", Vector2(1080, 450)], ["crate", Vector2(1190, 675)],
-		["barrel", Vector2(1340, 675)], ["crate", Vector2(700, 745)],
-		["barrel", Vector2(875, 745)], ["crate", Vector2(250, 665)],
+		["crate", Vector2(420, 560)], ["barrel", Vector2(365, 365)],
+		["crate", Vector2(940, 560)], ["barrel", Vector2(995, 365)],
 	]
 	for definition: Array in definitions:
 		var prop: PhysicsProp = PropScript.new()
@@ -789,14 +798,18 @@ func _spawn_local_effect(effect_type: String, at_position: Vector2, data: Dictio
 	audio_manager.play_event(effect_type, at_position, float(data.get("power", 1.0)))
 	var active_effects := get_tree().get_nodes_in_group("combat_effects")
 	if active_effects.size() >= MAX_ACTIVE_EFFECTS:
-		var released_one := false
+		var incoming_priority := EffectBurst.priority_for(effect_type)
+		var lowest_priority := 99
+		var lowest_effect: EffectBurst
 		for candidate: Node in active_effects:
-			if not candidate.is_queued_for_deletion():
-				candidate.queue_free()
-				released_one = true
-				break
-		if not released_one and effect_type not in ["explosion", "core_shockwave", "ko"]:
+			if candidate is EffectBurst and not candidate.is_queued_for_deletion():
+				var effect := candidate as EffectBurst
+				if effect.visual_priority < lowest_priority:
+					lowest_priority = effect.visual_priority
+					lowest_effect = effect
+		if lowest_effect == null or lowest_priority > incoming_priority or (lowest_priority == incoming_priority and incoming_priority <= 1):
 			return
+		lowest_effect.queue_free()
 	var effect: EffectBurst = EffectBurstScript.new()
 	add_child(effect)
 	effect.global_position = at_position

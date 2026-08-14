@@ -13,6 +13,7 @@ var direction_vector := Vector2.RIGHT
 var surface := ""
 var particles: Array[Vector2] = []
 var particle_sizes: Array[float] = []
+var visual_priority := 1
 
 func setup(type: String, data: Dictionary) -> void:
 	effect_type = type
@@ -24,9 +25,19 @@ func setup(type: String, data: Dictionary) -> void:
 		direction_vector = (requested_direction as Vector2).normalized()
 	surface = str(data.get("surface", ""))
 	duration = _duration_for(type)
+	visual_priority = priority_for(type)
 	_build_particles(_particle_count_for(type))
 	add_to_group("combat_effects")
 	queue_redraw()
+
+static func priority_for(type: String) -> int:
+	if type in ["explosion", "core_shockwave", "ko"]:
+		return 3
+	if type in ["muzzle", "impact_player", "impact_wall", "impact_object", "throw_impact", "slash", "core_warning", "floor_warning"]:
+		return 2
+	if type in ["land", "wind"]:
+		return 0
+	return 1
 
 func _process(delta: float) -> void:
 	elapsed += delta

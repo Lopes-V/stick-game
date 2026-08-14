@@ -2,18 +2,26 @@ class_name AudioManager
 extends Node
 
 const SAMPLE_RATE := 22050
-const MAX_VOICES := 8
+const MAX_VOICES := 6
+const MAX_AUDIBLE_DISTANCE := 1050.0
 
 var enabled := true
 var volume_scale := 0.55
+var game
 
 var _voices: Array[AudioStreamPlayer] = []
 var _stream_cache: Dictionary = {}
 var _next_voice := 0
 
-func play_event(event_name: String, _world_position := Vector2.ZERO, strength := 1.0) -> void:
+func setup(game_manager) -> void:
+	game = game_manager
+
+func play_event(event_name: String, world_position := Vector2.ZERO, strength := 1.0) -> void:
 	if not enabled or DisplayServer.get_name() == "headless":
 		return
+	if game and game.camera_manager and world_position != Vector2.ZERO and event_name not in ["explosion", "core_shockwave", "ko"]:
+		if game.camera_manager.position.distance_to(world_position) > MAX_AUDIBLE_DISTANCE:
+			return
 	_ensure_voices()
 	var cache_key := _cache_key(event_name, strength)
 	var stream: AudioStreamWAV = _stream_cache.get(cache_key)

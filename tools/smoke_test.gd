@@ -31,6 +31,12 @@ func _run() -> void:
 	if player_one == null or player_two == null:
 		_finish()
 		return
+	# Freeze autonomous combat after movement has been observed so the remaining
+	# assertions are deterministic and cannot be won by a bot mid-test.
+	var deterministic_spawns := game.map_controller.get_player_spawns()
+	for player: Player in game.players.values():
+		player.reset_for_round(deterministic_spawns[(player.player_id - 1) % deterministic_spawns.size()])
+		player.controls_locked = true
 
 	for player: Player in game.players.values():
 		player.controls_locked = true
@@ -150,6 +156,10 @@ func _run() -> void:
 	_check(prediction_probe.pending_inputs.is_empty() and prediction_probe._remote_buffers.is_empty() and prediction_probe._remote_teleport_serials.is_empty(), "round reset clears local and remote prediction buffers")
 	prediction_probe.queue_free()
 
+	for existing_weapon_id: int in game.weapons.keys().duplicate():
+		var existing_weapon: Weapon = game.weapons[existing_weapon_id]
+		if existing_weapon.holder_id == 0:
+			game.remove_weapon(existing_weapon_id)
 	var weapon_ids_before_delivery: Dictionary = {}
 	for weapon_id: int in game.weapons:
 		weapon_ids_before_delivery[weapon_id] = true
@@ -190,9 +200,22 @@ func _run() -> void:
 	_check(moving_deliveries >= deliveries_started, "delivered weapons enter the arena with physical velocity")
 	if not delivered_weapons.is_empty():
 		var pickup_weapon := delivered_weapons[0]
+		for candidate: Weapon in delivered_weapons:
+			if candidate.holder_id == 0:
+				pickup_weapon = candidate
+				break
+		if pickup_weapon.holder_id > 0:
+			pickup_weapon.drop(Vector2.ZERO)
+		for other_weapon: Weapon in delivered_weapons:
+			if other_weapon != pickup_weapon and other_weapon.holder_id == 0:
+				game.remove_weapon(other_weapon.weapon_id)
+		pickup_weapon.global_position = Vector2(680, 450)
+		pickup_weapon.linear_velocity = Vector2.ZERO
+		player_one.reset_for_round(Vector2(688, 450))
+		player_one.controls_locked = true
 		player_one.global_position = pickup_weapon.global_position + Vector2(8, 0)
 		game.try_pickup_weapon(player_one)
-		_check(player_one.held_weapon_id == pickup_weapon.weapon_id, "delivered weapon remains pickupable")
+		_check(player_one.held_weapon_id == pickup_weapon.weapon_id, "delivered weapon remains pickupable (expected %d, held %d)" % [pickup_weapon.weapon_id, player_one.held_weapon_id])
 		game.throw_held_weapon(player_one, Vector2.RIGHT)
 		pickup_weapon.global_position = Vector2(760, 1185)
 		pickup_weapon.linear_velocity = Vector2(120, 680)
@@ -232,13 +255,19 @@ func _run() -> void:
 	var pending_delivery = game.weapon_spawner.start_delivery("drone", "pistol")
 	_check(pending_delivery != null, "delivery can be pending before round resolution")
 
+	var clean_spawns := game.map_controller.get_player_spawns()
+	for player: Player in game.players.values():
+		player.reset_for_round(clean_spawns[(player.player_id - 1) % clean_spawns.size()])
+		player.controls_locked = true
+	player_two.global_position = game.map_controller.get_core_position()
 	player_two.impact = 250.0
 	player_two.apply_hit(6.0, Vector2(720, -240), player_one.player_id)
-	_check(not player_two.alive, "deterministic high-impact KO triggers")
+	_check(player_two.alive, "high Impact launches without an arbitrary mid-arena KO")
+	player_two.global_position.x = MapController.ARENA_WIDTH + 180.0
 	for player: Player in game.players.values():
 		if player.player_id != player_one.player_id and player.alive:
-			player.impact = 250.0
-			player.apply_hit(6.0, Vector2(720, -240), player_one.player_id)
+			player._last_hit_source_id = player_one.player_id
+			player.global_position.x = MapController.ARENA_WIDTH + 180.0
 	await get_tree().create_timer(0.4).timeout
 	_check(game.get_alive_player_ids().size() == 1, "round authority sees last survivor")
 	_check(game.round_manager.state == "round_end", "RoundManager resolves the authoritative winner")

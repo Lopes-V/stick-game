@@ -8,6 +8,10 @@ const DELIVERY_SCENES := {
 	"drone": preload("res://scenes/weapons/delivery/drone_delivery.tscn"),
 }
 const DELIVERY_TYPES: Array[String] = ["drop_pod", "wall_dispenser", "core", "drone"]
+const NORMAL_LOOSE_WEAPON_LIMIT := 7
+const MAX_LOOSE_WEAPON_LIMIT := 11
+const CHAOS_WEAPON_BONUS_PER_LEVEL := 1
+const STALE_LOOSE_WEAPON_SECONDS := 42.0
 
 var game
 var rng: RandomNumberGenerator
@@ -41,7 +45,9 @@ func tick(delta: float) -> void:
 	var multiplier := 1.0 + float(game.chaos_level) * 0.25
 	time_left = rng.randf_range(4.8, 7.2) / multiplier
 	if not has_weapon_capacity():
-		return
+		_despawn_oldest_stale_weapon()
+		if not has_weapon_capacity():
+			return
 	spawn_random_weapon(false)
 
 func spawn_random_weapon(from_sky: bool) -> void:
@@ -273,7 +279,32 @@ func _destination_points_for(delivery_type: String) -> Array[Vector2]:
 	return spawn_points
 
 func has_weapon_capacity() -> bool:
-	return game.weapons.size() + pending_delivery_count() < 12 + game.chaos_level * 3
+	return loose_weapon_count() + pending_delivery_count() < current_weapon_limit()
+
+func current_weapon_limit() -> int:
+	return mini(
+		NORMAL_LOOSE_WEAPON_LIMIT + game.chaos_level * CHAOS_WEAPON_BONUS_PER_LEVEL,
+		MAX_LOOSE_WEAPON_LIMIT
+	)
+
+func loose_weapon_count() -> int:
+	var count := 0
+	for weapon: Weapon in game.weapons.values():
+		if is_instance_valid(weapon) and weapon.holder_id == 0:
+			count += 1
+	return count
+
+func _despawn_oldest_stale_weapon() -> void:
+	var oldest: Weapon
+	var oldest_age := STALE_LOOSE_WEAPON_SECONDS
+	for weapon: Weapon in game.weapons.values():
+		if not is_instance_valid(weapon) or weapon.holder_id > 0:
+			continue
+		if weapon.loose_age >= oldest_age:
+			oldest = weapon
+			oldest_age = weapon.loose_age
+	if oldest:
+		game.remove_weapon(oldest.weapon_id)
 
 func pending_delivery_count() -> int:
 	var count := 0

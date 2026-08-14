@@ -12,6 +12,7 @@ var target_position := Vector2.ZERO
 var target_rotation := 0.0
 var last_teleport_serial := 0
 var cooldown_left := 0.0
+var loose_age := 0.0
 var _last_throw_msec := 0
 var _last_visual_impact_msec := 0
 var _visual_world_position := Vector2.ZERO
@@ -61,6 +62,8 @@ func setup(game_manager, id: int, type: String, authoritative: bool) -> void:
 
 func _physics_process(delta: float) -> void:
 	cooldown_left = maxf(cooldown_left - delta, 0.0)
+	if simulation_enabled and holder_id == 0:
+		loose_age += delta
 	if simulation_enabled and holder_id > 0:
 		var holder: Player = game.get_player(holder_id)
 		if holder and holder.alive:
@@ -71,9 +74,11 @@ func _physics_process(delta: float) -> void:
 	elif not simulation_enabled:
 		global_position = global_position.lerp(target_position, clampf(delta * 17.0, 0.0, 1.0))
 		rotation = lerp_angle(rotation, target_rotation, clampf(delta * 16.0, 0.0, 1.0))
-	_update_visual(delta)
-	_update_throw_trail(delta)
-	queue_redraw()
+	if DisplayServer.get_name() != "headless":
+		_update_visual(delta)
+		_update_throw_trail(delta)
+		if holder_id > 0 or not _trail_points.is_empty() or absf(_recoil_distance) > 0.01 or absf(_recoil_angle) > 0.001:
+			queue_redraw()
 
 func can_fire() -> bool:
 	return holder_id > 0 and ammo > 0 and cooldown_left <= 0.0
@@ -90,6 +95,7 @@ func pickup(player: Player) -> void:
 	collision_mask = 0
 	linear_velocity = Vector2.ZERO
 	angular_velocity = 0.0
+	loose_age = 0.0
 	_trail_points.clear()
 	_trail_lives.clear()
 	_snap_visual_to_holder(player)
@@ -100,6 +106,7 @@ func drop(impulse: Vector2) -> void:
 		if holder:
 			holder.held_weapon_id = 0
 	holder_id = 0
+	loose_age = 0.0
 	freeze = false
 	collision_layer = 4
 	collision_mask = 1 | 2 | 4
