@@ -8,7 +8,7 @@ func _init() -> void:
 
 func start_event() -> void:
 	super.start_event()
-	game.emit_effect("floor_warning", Vector2(800, 730), {})
+	game.emit_effect("floor_warning", Vector2(MapController.ARENA_WIDTH * 0.5, 620), {})
 
 func update_event(delta: float) -> bool:
 	if not dropped and elapsed >= 1.45:

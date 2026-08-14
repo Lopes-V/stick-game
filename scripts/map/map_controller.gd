@@ -1,9 +1,9 @@
 class_name MapController
 extends Node2D
 
-const ARENA_WIDTH := 1600.0
-const VOID_BOTTOM := 1120.0
-const SKY_Y := -180.0
+const ARENA_WIDTH := 1360.0
+const VOID_BOTTOM := 1080.0
+const SKY_Y := -160.0
 const REACTOR_SCENE := preload("res://scenes/maps/the_reactor.tscn")
 
 const MOVING_PLATFORM_NAMES: Array[String] = [
@@ -41,7 +41,7 @@ func get_weapon_spawns() -> Array[Vector2]:
 func get_core_position() -> Vector2:
 	_ensure_reactor_scene()
 	var marker := _reactor.get_node_or_null("Markers/CorePosition") as Marker2D
-	return marker.position if marker else Vector2(800, 480)
+	return marker.position if marker else Vector2(680, 660)
 
 func get_weapon_delivery_points() -> Dictionary:
 	return {
@@ -159,8 +159,8 @@ func _update_moving_platforms() -> void:
 	if not moving_enabled:
 		return
 	var phase := (_elapsed - _moving_started_at) * 1.05
-	var lift_amount := -46.0 * (1.0 - cos(phase))
-	var sway := 24.0 * sin(phase)
+	var lift_amount := -38.0 * (1.0 - cos(phase))
+	var sway := 18.0 * sin(phase)
 	var left := platform_nodes.get("maintenance_lift_left") as Node2D
 	var right := platform_nodes.get("maintenance_lift_right") as Node2D
 	if left:
