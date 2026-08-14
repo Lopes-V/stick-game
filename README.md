@@ -4,8 +4,10 @@ Arena fighter 2D para 2–4 jogadores na mesma rede local. O host roda uma simul
 
 ## Requisitos
 
-- No Windows, o launcher já inclui o runtime portátil Godot 4.7.1; não é
-  necessário instalar a Godot nem configurar `PATH`/`GODOT_EXE` para hospedar.
+- No Windows, a distribuição portátil pode incluir a Godot 4.7.1 em
+  `tools/godot`. Em um checkout somente do código, instale Godot 4.x ou defina
+  `GODOT_EXE`; o launcher também procura `godot4`, `godot` e `Godot.exe` no
+  `PATH`.
 - Python 3 apenas para o servidor HTTP do launcher LAN.
 - Para editar o projeto, use Godot 4.x. Para refazer `web_build/`, também são
   necessários os templates oficiais de exportação Web.
@@ -40,6 +42,12 @@ servidor continua publicando 30 snapshots/s. O jogador local usa prediction e
 reconciliation pelos números de sequência confirmados, enquanto jogadores
 remotos são exibidos com um buffer de interpolação de aproximadamente 50 ms.
 Teletransportes do Void Loop limpam o histórico e são aplicados por snap.
+
+O `CharacterBody2D` do jogador mantém a transformação de gameplay: authoritative
+no servidor, predicted para o jogador local e interpolada para jogadores remotos.
+Um `VisualRig` filho acompanha essa transformação com spring apenas visual e
+expõe `WeaponAnchor`; sway/recoil da arma não alteram colisão nem o muzzle
+authoritative usado pelos tiros.
 
 O launcher prepara a exportação **sem threads** para funcionar por HTTP dentro
 da rede privada, sem instalar certificados em cada celular. Controles touch,
@@ -107,7 +115,11 @@ O HTTP usa `8080/TCP`; o jogo WebSocket usa `9000/TCP`. O launcher não altera o
 
 ```text
 godot --headless --editor --path . --quit
+godot --headless --path . --script res://tools/map_validation.gd
 godot --headless --path . -- --server --test-bots=4 --auto-start --smoke-test --seed=424242
 ```
 
-O smoke test valida os quatro jogadores e seus inputs, pickup, tiro/munição, arremesso, Void Loop de jogador/objeto, pelo menos oito eventos modulares, KO, score, próximo round e reset authoritative.
+O smoke test valida quatro jogadores e seus inputs, rig/muzzle separados,
+prediction reset, pickup, tiro/munição, arremesso, entregas nos pontos do Reactor,
+Void Loop de jogador/objeto, pelo menos oito eventos modulares, KO, score e a
+sequência de limpeza round 1 → round 2 → round 3 sem nós temporários vazando.
