@@ -28,12 +28,29 @@ func _run() -> void:
 
 	for player: Player in game.players.values():
 		player.controls_locked = true
+	var test_camera := CameraManager.new()
+	game.add_child(test_camera)
+	test_camera.setup(game)
+	test_camera.add_shake(100.0)
+	test_camera._process(1.0 / 60.0)
+	_check(test_camera.shake_strength <= 15.0, "camera shake is capped")
+	var camera_position_before_void := test_camera.position
 	player_one.global_position = Vector2(320, 1185)
 	player_one.velocity = Vector2(240, 720)
 	await get_tree().physics_frame
 	await get_tree().physics_frame
 	_check(player_one.global_position.y < 0.0, "player Void Loop wraps to sky")
 	_check(player_one.velocity.x > 150.0 and player_one.velocity.y > 500.0, "player Void Loop preserves velocity")
+	_check(float(test_camera._teleport_grace.get(player_one.player_id, 0.0)) > 0.0, "camera detects Void teleport grace")
+	_check(test_camera.position.distance_to(camera_position_before_void) < 45.0, "camera does not jump on Void entry")
+	test_camera.queue_free()
+
+	var loop_projectile := game.spawn_projectile("rocket", player_one.player_id, Vector2(520, 1185), Vector2.DOWN, 720.0, 10.0, 400.0, Color.WHITE)
+	await get_tree().physics_frame
+	await get_tree().physics_frame
+	_check(loop_projectile.global_position.y < 0.0, "rocket Void Loop wraps to sky")
+	_check(loop_projectile.velocity.y > 500.0, "rocket Void Loop preserves velocity")
+	game.remove_projectile(loop_projectile.projectile_id)
 
 	var pistol := game.spawn_weapon("pistol", player_one.global_position + Vector2(20, 0))
 	game.try_pickup_weapon(player_one)
@@ -43,6 +60,43 @@ func _run() -> void:
 	_check(pistol.ammo == 11 and game.projectiles.size() > projectile_count, "weapon fire consumes ammo and creates projectile")
 	game.throw_held_weapon(player_one, Vector2.RIGHT)
 	_check(player_one.held_weapon_id == 0 and pistol.linear_velocity.x > 500.0, "weapon throw restores physical weapon")
+	_check(absf(pistol.angular_velocity) > 5.0, "thrown weapon gains dangerous visual rotation")
+
+	var weapon_cases := ["shotgun", "rifle", "sniper", "rocket", "grenade", "katana", "golden"]
+	for weapon_type: String in weapon_cases:
+		var test_weapon := game.spawn_weapon(weapon_type, player_one.global_position)
+		test_weapon.pickup(player_one)
+		var ammo_before := test_weapon.ammo
+		var projectile_ids_before: Dictionary = {}
+		for existing_id: int in game.projectiles:
+			projectile_ids_before[existing_id] = true
+		game.try_fire_weapon(player_one, Vector2.RIGHT)
+		_check(test_weapon.ammo == ammo_before - 1, "%s fire consumes ammo" % weapon_type)
+		_check(test_weapon._recoil_distance > 0.0 or absf(test_weapon._recoil_angle) > 0.0, "%s applies a visual recoil profile" % weapon_type)
+		if weapon_type == "katana":
+			_check(game.projectiles.size() == projectile_ids_before.size(), "katana remains melee-only")
+		else:
+			var new_projectile_types: Array[String] = []
+			for spawned_id: int in game.projectiles:
+				if not projectile_ids_before.has(spawned_id):
+					new_projectile_types.append((game.projectiles[spawned_id] as Projectile).projectile_type)
+			_check(not new_projectile_types.is_empty(), "%s creates projectiles" % weapon_type)
+			_check(new_projectile_types.all(func(type: String) -> bool: return type == weapon_type), "%s keeps its projectile presentation type" % weapon_type)
+		test_weapon.drop(Vector2.ZERO)
+		game.remove_weapon(test_weapon.weapon_id)
+	for spawned_id: int in game.projectiles.keys().duplicate():
+		game.remove_projectile(spawned_id)
+	game.remove_weapon(pistol.weapon_id)
+
+	for effect_type: String in ["muzzle", "impact_player", "impact_wall", "impact_object", "throw_impact", "explosion", "ko"]:
+		var effect := EffectBurst.new()
+		game.add_child(effect)
+		effect.setup(effect_type, {"color": Color.WHITE, "power": 700.0, "direction_vector": Vector2.RIGHT})
+		effect._process(1.0 / 60.0)
+		_check(effect.particles.size() <= EffectBurst.MAX_PARTICLES, "%s effect respects its particle budget" % effect_type)
+		effect.free()
+	var generated_sound := game.audio_manager._build_stream("muzzle", 360.0, 424242)
+	_check(generated_sound.data.size() > 0, "asset-free audio hook generates lightweight PCM")
 
 	var first_prop: PhysicsProp = game.props.values()[0] as PhysicsProp
 	first_prop.global_position = Vector2(700, 1190)
@@ -51,6 +105,12 @@ func _run() -> void:
 	await get_tree().physics_frame
 	_check(first_prop.global_position.y < 0.0, "physical object uses Void Loop")
 	_check(first_prop.linear_velocity.y > 500.0, "physical object preserves vertical velocity")
+	first_prop.global_position = Vector2(800, -420)
+	first_prop.linear_velocity = Vector2.ZERO
+	var prop_health_before_explosion := first_prop.health
+	game.explode(first_prop.global_position + Vector2(20, 0), 120.0, 360.0, 5.0, player_one.player_id)
+	await get_tree().physics_frame
+	_check(first_prop.health < prop_health_before_explosion and first_prop.linear_velocity.length() > 0.0, "explosion applies expansion force to nearby objects")
 
 	game.round_manager.round_elapsed = float(game.config.chaos_start_seconds)
 	game.chaos_director.tick(0.6, game.round_manager.round_elapsed)
