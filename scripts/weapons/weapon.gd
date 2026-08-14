@@ -20,6 +20,7 @@ var _visual_velocity := Vector2.ZERO
 var _visual_angular_velocity := 0.0
 var _visual_initialized := false
 var _observed_teleport_serial := -1
+var _observed_holder_teleport_serial := -1
 var _sway_time := 0.0
 var _recoil_distance := 0.0
 var _recoil_velocity := 0.0
@@ -63,7 +64,7 @@ func _physics_process(delta: float) -> void:
 	if simulation_enabled and holder_id > 0:
 		var holder: Player = game.get_player(holder_id)
 		if holder and holder.alive:
-			global_position = holder.global_position + holder.aim_direction * 30.0 + Vector2(0, -8)
+			global_position = holder.get_gameplay_weapon_position()
 			rotation = holder.aim_direction.angle()
 		else:
 			drop(Vector2.ZERO)
@@ -91,7 +92,7 @@ func pickup(player: Player) -> void:
 	angular_velocity = 0.0
 	_trail_points.clear()
 	_trail_lives.clear()
-	_snap_visual_to_physics()
+	_snap_visual_to_holder(player)
 
 func drop(impulse: Vector2) -> void:
 	if holder_id > 0:
@@ -195,6 +196,15 @@ func _update_visual(delta: float) -> void:
 		_trail_points.clear()
 		_trail_lives.clear()
 	_observed_teleport_serial = current_serial
+	if holder_id > 0:
+		var teleporting_holder: Player = game.get_player(holder_id)
+		if teleporting_holder:
+			var holder_serial := int(teleporting_holder.get_meta("teleport_serial", 0)) if teleporting_holder.simulation_enabled else teleporting_holder.last_remote_teleport_serial
+			if _observed_holder_teleport_serial >= 0 and holder_serial != _observed_holder_teleport_serial:
+				_snap_visual_to_holder(teleporting_holder)
+			_observed_holder_teleport_serial = holder_serial
+	else:
+		_observed_holder_teleport_serial = -1
 	if not _visual_initialized:
 		_snap_visual_to_physics()
 
@@ -204,18 +214,23 @@ func _update_visual(delta: float) -> void:
 		var holder: Player = game.get_player(holder_id)
 		var movement_lag := Vector2.ZERO
 		var bob := Vector2.ZERO
+		var target_visual_position := global_position
+		var target_visual_rotation := rotation
 		if holder:
+			var anchor_transform := holder.get_visual_weapon_transform()
+			target_visual_position = anchor_transform.origin
+			target_visual_rotation = anchor_transform.get_rotation()
 			movement_lag = Vector2(
 				clampf(-holder.velocity.x * 0.008, -7.0, 7.0),
 				clampf(-holder.velocity.y * 0.003, -4.0, 4.0)
 			)
 			var speed_ratio := clampf(absf(holder.velocity.x) / 350.0, 0.0, 1.0)
 			bob = Vector2(0.0, sin(_sway_time * 10.0) * speed_ratio * 1.8).rotated(rotation)
-		var target_visual_position := global_position + movement_lag + bob
+		target_visual_position += movement_lag + bob
 		var position_acceleration := (target_visual_position - _visual_world_position) * 145.0 - _visual_velocity * 22.0
 		_visual_velocity += position_acceleration * step
 		_visual_world_position += _visual_velocity * step
-		var rotation_error := angle_difference(_visual_world_rotation, rotation)
+		var rotation_error := angle_difference(_visual_world_rotation, target_visual_rotation)
 		var angular_acceleration := rotation_error * 125.0 - _visual_angular_velocity * 19.0
 		_visual_angular_velocity += angular_acceleration * step
 		_visual_world_rotation += _visual_angular_velocity * step
@@ -238,6 +253,14 @@ func _update_visual(delta: float) -> void:
 func _snap_visual_to_physics() -> void:
 	_visual_world_position = global_position
 	_visual_world_rotation = rotation
+	_visual_velocity = Vector2.ZERO
+	_visual_angular_velocity = 0.0
+	_visual_initialized = true
+
+func _snap_visual_to_holder(holder: Player) -> void:
+	var anchor_transform := holder.get_visual_weapon_transform()
+	_visual_world_position = anchor_transform.origin
+	_visual_world_rotation = anchor_transform.get_rotation()
 	_visual_velocity = Vector2.ZERO
 	_visual_angular_velocity = 0.0
 	_visual_initialized = true

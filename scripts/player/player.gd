@@ -1,6 +1,7 @@
 class_name Player
 extends CharacterBody2D
 
+const PlayerVisualRigScript := preload("res://scripts/player/player_visual_rig.gd")
 const PLAYER_COLORS := [Color("43a8ff"), Color("ff5364"), Color("55dc78"), Color("ffd447")]
 const MOVE_SPEED := 350.0
 const GROUND_ACCEL := 2500.0
@@ -10,6 +11,7 @@ const JUMP_SPEED := 610.0
 const COYOTE_TIME := 0.12
 const JUMP_BUFFER := 0.14
 const WALL_GRACE := 0.16
+const INPUT_TIMEOUT := 0.30
 
 var game
 var player_id := 0
@@ -23,8 +25,8 @@ var held_weapon_id := 0
 var aim_direction := Vector2.RIGHT
 var input_state: Dictionary = {}
 var last_sequence := -1
-var teleport_serial := 0
 var ko_visual_left := 0.0
+var visual_rig: PlayerVisualRig
 
 var target_position := Vector2.ZERO
 var target_velocity := Vector2.ZERO
@@ -37,10 +39,10 @@ var _previous_jump := false
 var _previous_pickup := false
 var _previous_throw := false
 var _facing := 1.0
-var _walk_phase := 0.0
 var _squash := 0.0
 var _hit_flash := 0.0
 var _was_on_floor := false
+var _input_time_left := 0.0
 
 func setup(game_manager, id: int, name_text: String, authoritative: bool) -> void:
 	game = game_manager
@@ -63,7 +65,9 @@ func setup(game_manager, id: int, name_text: String, authoritative: bool) -> voi
 	var collision := CollisionShape2D.new()
 	collision.shape = capsule
 	add_child(collision)
-	queue_redraw()
+	visual_rig = PlayerVisualRigScript.new()
+	add_child(visual_rig)
+	visual_rig.setup(self)
 
 func set_network_input(next_input: Dictionary) -> void:
 	var sequence := int(next_input.get("sequence", 0))
@@ -71,6 +75,7 @@ func set_network_input(next_input: Dictionary) -> void:
 		return
 	last_sequence = sequence
 	input_state = next_input.duplicate(true)
+	_input_time_left = INPUT_TIMEOUT
 	var aim := Vector2(float(input_state.get("aim_x", _facing)), float(input_state.get("aim_y", 0.0)))
 	if aim.length_squared() > 0.08:
 		aim_direction = aim.normalized()
@@ -79,6 +84,7 @@ func set_network_input(next_input: Dictionary) -> void:
 
 func set_bot_input(next_input: Dictionary) -> void:
 	input_state = next_input
+	_input_time_left = INPUT_TIMEOUT
 	var aim := Vector2(float(next_input.get("aim_x", _facing)), float(next_input.get("aim_y", 0.0)))
 	if aim.length_squared() > 0.08:
 		aim_direction = aim.normalized()
@@ -87,13 +93,17 @@ func _physics_process(delta: float) -> void:
 	_unarmed_cooldown = maxf(_unarmed_cooldown - delta, 0.0)
 	_hit_flash = maxf(_hit_flash - delta, 0.0)
 	_squash = move_toward(_squash, 0.0, delta * 5.0)
-	_walk_phase += absf(velocity.x) * delta * 0.026
-	queue_redraw()
+	if visual_rig:
+		visual_rig.queue_redraw()
 
 	if not simulation_enabled:
 		global_position = global_position.lerp(target_position, clampf(delta * 16.0, 0.0, 1.0))
 		velocity = velocity.lerp(target_velocity, clampf(delta * 12.0, 0.0, 1.0))
 		return
+
+	_input_time_left = maxf(_input_time_left - delta, 0.0)
+	if _input_time_left <= 0.0 and not input_state.is_empty():
+		_neutralize_stale_input()
 
 	if not alive:
 		ko_visual_left = maxf(ko_visual_left - delta, 0.0)
@@ -220,13 +230,19 @@ func reset_for_round(spawn_position: Vector2) -> void:
 	controls_locked = true
 	impact = 0.0
 	held_weapon_id = 0
-	teleport_serial = 0
 	last_remote_teleport_serial = 0
+	set_meta("teleport_serial", 0)
 	ko_visual_left = 0.0
 	visible = true
 	collision_layer = 1 if simulation_enabled else 0
 	collision_mask = (2 | 4) if simulation_enabled else 0
 	input_state.clear()
+	_input_time_left = 0.0
+	_previous_jump = false
+	_previous_pickup = false
+	_previous_throw = false
+	if visual_rig:
+		visual_rig.snap_after_teleport()
 
 func apply_network_state(state: Dictionary) -> void:
 	display_name = str(state.get("name", display_name))
@@ -242,6 +258,37 @@ func apply_network_state(state: Dictionary) -> void:
 		global_position = target_position
 		velocity = target_velocity
 		last_remote_teleport_serial = serial
+		if visual_rig:
+			visual_rig.snap_after_teleport()
+
+func _neutralize_stale_input() -> void:
+	input_state["move"] = 0.0
+	input_state["jump"] = false
+	input_state["attack"] = false
+	input_state["pickup"] = false
+	input_state["throw"] = false
+	_previous_jump = false
+	_previous_pickup = false
+	_previous_throw = false
+
+func get_gameplay_weapon_position(direction := Vector2.ZERO) -> Vector2:
+	var requested_direction: Vector2 = aim_direction if direction.length_squared() <= 0.1 else direction
+	if requested_direction.length_squared() <= 0.1:
+		requested_direction = Vector2.RIGHT
+	var normalized_direction := requested_direction.normalized()
+	return global_position + normalized_direction * 30.0 + Vector2(0.0, -8.0)
+
+func get_gameplay_muzzle_position(direction := Vector2.ZERO) -> Vector2:
+	var requested_direction: Vector2 = aim_direction if direction.length_squared() <= 0.1 else direction
+	if requested_direction.length_squared() <= 0.1:
+		requested_direction = Vector2.RIGHT
+	var normalized_direction := requested_direction.normalized()
+	return get_gameplay_weapon_position(normalized_direction) + normalized_direction * 34.0
+
+func get_visual_weapon_transform() -> Transform2D:
+	if visual_rig and is_instance_valid(visual_rig):
+		return visual_rig.get_weapon_anchor_transform()
+	return Transform2D(aim_direction.angle(), get_gameplay_weapon_position())
 
 func snapshot() -> Dictionary:
 	return {
@@ -255,19 +302,3 @@ func snapshot() -> Dictionary:
 
 func _gravity() -> float:
 	return float(ProjectSettings.get_setting("physics/2d/default_gravity")) * game.gravity_multiplier
-
-func _draw() -> void:
-	var color := Color.WHITE if _hit_flash > 0.0 else player_color
-	if not alive:
-		color.a = 0.52
-	var lean := clampf(velocity.x / 900.0, -0.28, 0.28)
-	var body_scale := Vector2(1.0 + _squash * 0.16, 1.0 - _squash * 0.14)
-	draw_set_transform(Vector2.ZERO, lean, body_scale)
-	var stride := sin(_walk_phase) * minf(absf(velocity.x) / MOVE_SPEED, 1.0) * 13.0
-	draw_circle(Vector2(0, -34), 13.0, color)
-	draw_line(Vector2(0, -20), Vector2(0, 12), color, 7.0, true)
-	draw_line(Vector2(0, -12), Vector2(aim_direction.x * 25.0, -9 + aim_direction.y * 22.0), color, 6.0, true)
-	draw_line(Vector2(0, -9), Vector2(-aim_direction.x * 18.0, 4 - aim_direction.y * 10.0), color.darkened(0.15), 5.0, true)
-	draw_line(Vector2(0, 10), Vector2(-12 + stride, 35), color, 6.0, true)
-	draw_line(Vector2(0, 10), Vector2(12 - stride, 35), color.darkened(0.12), 6.0, true)
-	draw_string(ThemeDB.fallback_font, Vector2(-30, -57), "P%d" % player_id, HORIZONTAL_ALIGNMENT_CENTER, 60, 15, Color.WHITE)

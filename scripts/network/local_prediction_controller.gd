@@ -90,7 +90,8 @@ func reconcile_local(state: Dictionary, snapshot_tick: int) -> void:
 		_local_teleport_serial = teleport_serial
 		pending_inputs.clear()
 		_reset_prediction_state(state)
-		local_player.queue_redraw()
+		if local_player.visual_rig:
+			local_player.visual_rig.snap_after_teleport()
 		return
 
 	_local_teleport_serial = teleport_serial
@@ -129,7 +130,6 @@ func reconcile_local(state: Dictionary, snapshot_tick: int) -> void:
 	var reconciled_velocity := local_player.velocity
 	var velocity_error := previous_velocity.distance_to(reconciled_velocity)
 	if prediction_error >= SNAP_ERROR_PIXELS or velocity_error >= SNAP_VELOCITY_ERROR:
-		local_player.queue_redraw()
 		return
 
 	var correction_weight := 0.14
@@ -142,7 +142,6 @@ func reconcile_local(state: Dictionary, snapshot_tick: int) -> void:
 	for record: Dictionary in pending_inputs:
 		record["predicted_position"] = Vector2(record.get("predicted_position", Vector2.ZERO)) + position_offset
 		record["predicted_velocity"] = Vector2(record.get("predicted_velocity", Vector2.ZERO)) + velocity_offset
-	local_player.queue_redraw()
 
 func push_remote_state(player: Player, state: Dictionary, snapshot_tick: int) -> void:
 	_apply_player_metadata(player, state)
@@ -160,7 +159,8 @@ func push_remote_state(player: Player, state: Dictionary, snapshot_tick: int) ->
 		_remote_buffers[player_id] = [record]
 		player.global_position = record.position
 		player.velocity = record.velocity
-		player.queue_redraw()
+		if player.visual_rig:
+			player.visual_rig.snap_after_teleport()
 		return
 
 	var buffer: Array = _remote_buffers.get(player_id, [])
@@ -226,7 +226,6 @@ func _render_remote_player(player: Player, buffer: Array, render_tick: float, ph
 		var weight := clampf(inverse_lerp(float(before.tick), float(after.tick), render_tick), 0.0, 1.0)
 		player.global_position = Vector2(before.position).lerp(Vector2(after.position), weight)
 		player.velocity = Vector2(before.velocity).lerp(Vector2(after.velocity), weight)
-	player.queue_redraw()
 
 func _simulate_movement(command: Dictionary, delta: float) -> void:
 	if local_player == null or not is_instance_valid(local_player):
@@ -289,7 +288,6 @@ func _simulate_movement(command: Dictionary, delta: float) -> void:
 	local_player.velocity.y = minf(local_player.velocity.y, VoidLoopManager.MAX_VERTICAL_SPEED)
 	local_player.move_and_slide()
 	_update_local_weapon_visual()
-	local_player.queue_redraw()
 
 func _update_local_weapon_visual() -> void:
 	if local_player == null or local_player.held_weapon_id <= 0:
@@ -297,7 +295,7 @@ func _update_local_weapon_visual() -> void:
 	var weapon: Weapon = game.weapons.get(local_player.held_weapon_id)
 	if weapon == null or weapon.simulation_enabled:
 		return
-	weapon.global_position = local_player.global_position + local_player.aim_direction * 30.0 + Vector2(0.0, -8.0)
+	weapon.global_position = local_player.get_gameplay_weapon_position()
 	weapon.rotation = local_player.aim_direction.angle()
 
 func _apply_player_metadata(player: Player, state: Dictionary) -> void:
@@ -308,6 +306,7 @@ func _apply_player_metadata(player: Player, state: Dictionary) -> void:
 	player.alive = bool(state.get("alive", player.alive))
 	player.visible = bool(state.get("visible", true))
 	player.held_weapon_id = int(state.get("weapon", 0))
+	player.last_remote_teleport_serial = int(state.get("t", player.last_remote_teleport_serial))
 	var aim := Vector2(float(state.get("ax", _facing)), float(state.get("ay", 0.0)))
 	if aim.length_squared() > 0.001:
 		player.aim_direction = aim.normalized()

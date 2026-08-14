@@ -94,8 +94,7 @@ func force_next_event() -> void:
 		_start_random_event()
 
 func _start_random_event() -> void:
-	var candidates := EVENT_SCRIPTS.duplicate()
-	candidates.shuffle()
+	var candidates: Array = game.shuffled_with_match_rng(EVENT_SCRIPTS)
 	for event_script in candidates:
 		var candidate = event_script.new()
 		candidate.setup(game, rng)

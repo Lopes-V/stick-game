@@ -277,7 +277,7 @@ func throw_held_weapon(player: Player, direction: Vector2) -> void:
 		player.held_weapon_id = 0
 		return
 	var throw_direction := direction.normalized() if direction.length_squared() > 0.1 else Vector2(player.aim_direction.x, -0.15).normalized()
-	weapon.global_position = player.global_position + throw_direction * 34.0
+	weapon.global_position = player.get_gameplay_weapon_position(throw_direction)
 	weapon.drop(throw_direction * 720.0 + player.velocity * 0.55)
 
 func try_fire_weapon(player: Player, direction: Vector2) -> void:
@@ -293,13 +293,14 @@ func try_fire_weapon(player: Player, direction: Vector2) -> void:
 		perform_melee(player, shot_direction, not player.is_on_floor(), true)
 	else:
 		var projectile_type := weapon.weapon_type
+		var gameplay_muzzle := player.get_gameplay_muzzle_position(shot_direction)
 		for pellet in int(data.pellets):
 			var spread := rng.randf_range(-float(data.spread), float(data.spread))
 			var pellet_direction := shot_direction.rotated(spread)
-			spawn_projectile(projectile_type, player.player_id, weapon.global_position + pellet_direction * 28.0, pellet_direction, float(data.speed), float(data.damage), float(data.force), data.color)
+			spawn_projectile(projectile_type, player.player_id, gameplay_muzzle, pellet_direction, float(data.speed), float(data.damage), float(data.force), data.color)
 		weapon.apply_visual_recoil(float(data.recoil))
 		var camera_strength := _weapon_camera_strength(weapon.weapon_type)
-		emit_effect("muzzle", weapon.global_position + shot_direction * 34.0, {
+		emit_effect("muzzle", gameplay_muzzle, {
 			"color": data.color,
 			"power": float(data.recoil),
 			"direction_vector": shot_direction,
@@ -434,12 +435,20 @@ func apply_core_force(strength: float, delta: float) -> void:
 			rigid.apply_central_force(outward * strength * 1.5)
 
 func impulse_random_objects(count: int) -> void:
-	var bodies := get_tree().get_nodes_in_group("physics_objects")
-	bodies.shuffle()
+	var bodies := shuffled_with_match_rng(get_tree().get_nodes_in_group("physics_objects"))
 	for index in mini(count, bodies.size()):
-		var body := bodies[index]
+		var body: Node = bodies[index]
 		if body is RigidBody2D and is_instance_valid(body) and not (body is Weapon and body.holder_id > 0):
 			(body as RigidBody2D).apply_central_impulse(Vector2(rng.randf_range(-620, 620), rng.randf_range(-720, -180)))
+
+func shuffled_with_match_rng(values: Array) -> Array:
+	var result := values.duplicate()
+	for index in range(result.size() - 1, 0, -1):
+		var swap_index := rng.randi_range(0, index)
+		var current = result[index]
+		result[index] = result[swap_index]
+		result[swap_index] = current
+	return result
 
 func remove_weapon(weapon_id: int) -> void:
 	var weapon: Weapon = weapons.get(weapon_id)
@@ -499,8 +508,11 @@ func receive_match_event(event_name: String, payload: Dictionary) -> void:
 		_spawn_local_effect(str(payload.type), payload.position, payload.get("data", {}))
 	elif event_name == "arena_reset":
 		map_controller.reset_map()
+		_clear_client_transients()
 		if local_prediction:
 			local_prediction.reset_prediction()
+		if camera_manager:
+			camera_manager.reset_round_state()
 	elif event_name == "camera_shake" and camera_manager:
 		camera_manager.add_shake(float(payload.get("strength", 2.0)))
 		var kick_direction: Variant = payload.get("direction", Vector2.ZERO)
@@ -790,6 +802,11 @@ func _spawn_local_effect(effect_type: String, at_position: Vector2, data: Dictio
 	effect.global_position = at_position
 	effect.setup(effect_type, data)
 	_apply_local_feedback(effect_type, at_position, data)
+
+func _clear_client_transients() -> void:
+	for effect: Node in get_tree().get_nodes_in_group("combat_effects"):
+		if is_instance_valid(effect):
+			effect.queue_free()
 
 func _apply_local_feedback(effect_type: String, at_position: Vector2, data: Dictionary) -> void:
 	if camera_manager == null:

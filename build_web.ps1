@@ -29,8 +29,20 @@ function Find-Godot {
 
 $godot = Find-Godot
 Write-Host "Using Godot: $godot"
-& $godot --headless --path $projectRoot --export-release 'Web' "$projectRoot\web_build\index.html"
-if ($LASTEXITCODE -ne 0) { throw "Godot Web export failed with exit code $LASTEXITCODE." }
+$logDir = Join-Path $projectRoot 'logs'
+New-Item -ItemType Directory -Path $logDir -Force | Out-Null
+$quotedProjectRoot = '"' + $projectRoot.Replace('"', '\"') + '"'
+$exportPath = Join-Path $projectRoot 'web_build\index.html'
+$quotedExportPath = '"' + $exportPath.Replace('"', '\"') + '"'
+$exportArguments = "--headless --path $quotedProjectRoot --export-release Web $quotedExportPath"
+$exportProcess = Start-Process -FilePath $godot -ArgumentList $exportArguments `
+    -RedirectStandardOutput "$logDir\web-export.log" -RedirectStandardError "$logDir\web-export-error.log" `
+    -WindowStyle Hidden -Wait -PassThru
+if ($exportProcess.ExitCode -ne 0) {
+    Get-Content -LiteralPath "$logDir\web-export.log" -ErrorAction SilentlyContinue
+    Get-Content -LiteralPath "$logDir\web-export-error.log" -ErrorAction SilentlyContinue
+    throw "Godot Web export failed with exit code $($exportProcess.ExitCode)."
+}
 if (-not (Test-Path -LiteralPath "$projectRoot\web_build\index.html")) { throw 'Godot reported success but web_build/index.html is missing.' }
 $pythonCommand = Get-Command 'python' -ErrorAction SilentlyContinue
 if (-not $pythonCommand -or $pythonCommand.Source -match 'WindowsApps') {

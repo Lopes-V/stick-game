@@ -76,7 +76,7 @@ func start_delivery(delivery_type: String, weapon_type: String, forced_destinati
 		minimum_distance = 190.0
 	var destination: Vector2 = forced_destination
 	if destination == Vector2.ZERO:
-		destination = choose_suitable_point(away_from, minimum_distance)
+		destination = choose_suitable_point(_destination_points_for(delivery_type), away_from, minimum_distance)
 	if destination == Vector2.ZERO or not is_point_suitable(destination):
 		return null
 	var config := build_delivery_config(delivery_type, destination)
@@ -132,12 +132,12 @@ func build_delivery_config(delivery_type: String, destination: Vector2) -> Dicti
 				"cleanup_delay": 0.55,
 			}
 		"core":
-			var core := get_core_position()
-			var direction := (destination - core).normalized()
+			var source := get_core_ejection_position()
+			var direction := (destination - source).normalized()
 			if direction.length_squared() < 0.1:
 				direction = Vector2.RIGHT
 			return {
-				"source_position": core,
+				"source_position": source,
 				"launch_velocity": (direction + Vector2.UP * 0.32).normalized() * rng.randf_range(560.0, 690.0),
 				"release_spin": rng.randf_range(-7.0, 7.0),
 				"charge_duration": rng.randf_range(1.0, 1.35),
@@ -148,18 +148,14 @@ func build_delivery_config(delivery_type: String, destination: Vector2) -> Dicti
 	return {}
 
 func get_wall_dispenser_config(destination: Vector2) -> Dictionary:
-	var entries := get_map_entries("get_wall_dispenser_points")
-	if entries.is_empty():
-		entries = get_map_entries("get_weapon_dispenser_points")
+	var entries := get_delivery_points("wall_dispensers")
 	var source := destination
 	var direction := Vector2.RIGHT if destination.x <= MapController.ARENA_WIDTH * 0.5 else Vector2.LEFT
 	if not entries.is_empty():
-		var entry = entries[rng.randi_range(0, entries.size() - 1)]
-		if entry is Vector2:
-			source = entry
-		elif entry is Dictionary:
-			source = entry.get("position", entry.get("source", destination))
-			direction = entry.get("direction", direction)
+		source = entries[0]
+		for entry: Vector2 in entries:
+			if entry.distance_squared_to(destination) < source.distance_squared_to(destination):
+				source = entry
 		var toward_target := destination - source
 		if toward_target.length_squared() > 100.0:
 			direction = toward_target.normalized()
@@ -174,24 +170,25 @@ func get_wall_dispenser_config(destination: Vector2) -> Dictionary:
 	return {"source": source, "release": release_position, "direction": direction}
 
 func get_drone_config(destination: Vector2) -> Dictionary:
-	var entries := get_map_entries("get_supply_drone_paths")
-	if entries.is_empty():
-		entries = get_map_entries("get_drone_paths")
+	var path := get_delivery_points("drone_path")
 	var fly_right := rng.randf() < 0.5
 	var flight_y := rng.randf_range(45.0, 115.0)
 	var start := Vector2(-130, flight_y) if fly_right else Vector2(MapController.ARENA_WIDTH + 130, flight_y)
 	var end := Vector2(MapController.ARENA_WIDTH + 130, flight_y) if fly_right else Vector2(-130, flight_y)
-	if not entries.is_empty():
-		var entry = entries[rng.randi_range(0, entries.size() - 1)]
-		if entry is Dictionary:
-			start = entry.get("start", start)
-			end = entry.get("end", end)
+	var flight_path: Array[Vector2] = [start, end]
+	if path.size() >= 2:
+		flight_path = path.duplicate()
+		if not fly_right:
+			flight_path.reverse()
+		start = flight_path.front()
+		end = flight_path.back()
 	var travel_direction := signf(end.x - start.x)
 	if is_zero_approx(travel_direction):
 		travel_direction = 1.0
 	return {
 		"start_position": start,
 		"end_position": end,
+		"path_points": flight_path,
 		"drop_position": destination,
 		"cargo_velocity": Vector2(travel_direction * rng.randf_range(90.0, 155.0), rng.randf_range(145.0, 220.0)),
 		"release_spin": rng.randf_range(-7.0, 7.0),
@@ -200,10 +197,11 @@ func get_drone_config(destination: Vector2) -> Dictionary:
 		"cleanup_delay": 0.35,
 	}
 
-func choose_suitable_point(away_from = null, minimum_distance := 0.0) -> Vector2:
-	if spawn_points.is_empty():
+func choose_suitable_point(candidates: Array[Vector2] = [], away_from = null, minimum_distance := 0.0) -> Vector2:
+	var available_points := candidates if not candidates.is_empty() else spawn_points
+	if available_points.is_empty():
 		return Vector2.ZERO
-	var shuffled: Array[Vector2] = spawn_points.duplicate()
+	var shuffled: Array[Vector2] = available_points.duplicate()
 	for index in range(shuffled.size() - 1, 0, -1):
 		var swap_index := rng.randi_range(0, index)
 		var value := shuffled[index]
@@ -253,11 +251,26 @@ func get_core_position() -> Vector2:
 		return game.map_controller.call("get_core_position")
 	return Vector2(MapController.ARENA_WIDTH * 0.5, 455.0)
 
-func get_map_entries(method_name: String) -> Array:
-	if game.map_controller == null or not game.map_controller.has_method(method_name):
-		return []
-	var result = game.map_controller.call(method_name)
-	return result if result is Array else []
+func get_core_ejection_position() -> Vector2:
+	var points := get_delivery_points("core_ejection")
+	return points[0] if not points.is_empty() else get_core_position()
+
+func get_delivery_points(key: String) -> Array[Vector2]:
+	var result: Array[Vector2] = []
+	if game.map_controller == null or not game.map_controller.has_method("get_weapon_delivery_points"):
+		return result
+	var delivery_config: Variant = game.map_controller.call("get_weapon_delivery_points")
+	if not delivery_config is Dictionary:
+		return result
+	for entry: Variant in (delivery_config as Dictionary).get(key, []):
+		if entry is Vector2:
+			result.append(entry)
+	return result
+
+func _destination_points_for(delivery_type: String) -> Array[Vector2]:
+	if delivery_type == "drop_pod":
+		return get_delivery_points("drop_pods")
+	return spawn_points
 
 func has_weapon_capacity() -> bool:
 	return game.weapons.size() + pending_delivery_count() < 12 + game.chaos_level * 3

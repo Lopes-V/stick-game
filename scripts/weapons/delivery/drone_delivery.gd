@@ -2,6 +2,7 @@ extends WeaponDelivery
 
 var start_position := Vector2.ZERO
 var end_position := Vector2.ZERO
+var path_points: Array[Vector2] = []
 var drop_position := Vector2.ZERO
 var cargo_velocity := Vector2.ZERO
 var release_spin := 0.0
@@ -13,6 +14,11 @@ var drop_time := 1.5
 func _configure_delivery() -> void:
 	start_position = parameters.get("start_position", Vector2(-120, 80))
 	end_position = parameters.get("end_position", Vector2(1720, 80))
+	for point: Variant in parameters.get("path_points", [start_position, end_position]):
+		if point is Vector2:
+			path_points.append(point)
+	if path_points.size() < 2:
+		path_points = [start_position, end_position]
 	drop_position = parameters.get("drop_position", destination)
 	cargo_velocity = parameters.get("cargo_velocity", Vector2(130, 190))
 	release_spin = float(parameters.get("release_spin", 0.0))
@@ -27,13 +33,18 @@ func _configure_delivery() -> void:
 func _update_delivery(_delta: float) -> void:
 	if elapsed >= warning_duration:
 		var progress := clampf((elapsed - warning_duration) / travel_duration, 0.0, 1.0)
-		global_position = start_position.lerp(end_position, progress)
+		global_position = _sample_path(progress)
 	if not weapon_released and elapsed >= drop_time:
 		release_weapon(global_position + Vector2(0, 28), cargo_velocity, release_spin)
 		if authoritative:
 			game.emit_effect("drone_drop", global_position, {"color": Color("ffd766"), "power": 125.0})
 	if elapsed >= warning_duration + travel_duration + cleanup_delay:
 		finish_delivery()
+
+func _sample_path(progress: float) -> Vector2:
+	var scaled_progress := clampf(progress, 0.0, 1.0) * float(path_points.size() - 1)
+	var segment := mini(int(floor(scaled_progress)), path_points.size() - 2)
+	return path_points[segment].lerp(path_points[segment + 1], scaled_progress - float(segment))
 
 func _draw() -> void:
 	var blink := 0.45 + 0.55 * sin(elapsed * 11.0) * sin(elapsed * 11.0)

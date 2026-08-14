@@ -124,3 +124,13 @@ func add_world_impact(world_position: Vector2, strength: float) -> void:
 
 func add_visual_hold(duration: float) -> void:
 	_visual_hold_left = maxf(_visual_hold_left, clampf(duration, 0.0, 0.055))
+
+func reset_round_state() -> void:
+	_trauma = 0.0
+	shake_strength = 0.0
+	_impact_offset = Vector2.ZERO
+	_impact_velocity = Vector2.ZERO
+	_visual_hold_left = 0.0
+	_teleport_serials.clear()
+	_teleport_grace.clear()
+	offset = Vector2.ZERO
