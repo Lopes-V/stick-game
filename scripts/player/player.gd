@@ -3,14 +3,16 @@ extends CharacterBody2D
 
 const PlayerVisualRigScript := preload("res://scripts/player/player_visual_rig.gd")
 const PLAYER_COLORS := [Color("43a8ff"), Color("ff5364"), Color("55dc78"), Color("ffd447")]
-const MOVE_SPEED := 350.0
-const GROUND_ACCEL := 2500.0
-const AIR_ACCEL := 1250.0
-const DECEL := 3100.0
-const JUMP_SPEED := 610.0
-const COYOTE_TIME := 0.12
-const JUMP_BUFFER := 0.14
-const WALL_GRACE := 0.16
+const MOVE_SPEED := PlayerMovement.MOVE_SPEED
+const GROUND_ACCELERATION := PlayerMovement.GROUND_ACCELERATION
+const GROUND_DECELERATION := PlayerMovement.GROUND_DECELERATION
+const AIR_ACCELERATION := PlayerMovement.AIR_ACCELERATION
+const AIR_DECELERATION := PlayerMovement.AIR_DECELERATION
+const TURN_ACCELERATION := PlayerMovement.TURN_ACCELERATION
+const JUMP_SPEED := PlayerMovement.JUMP_SPEED
+const COYOTE_TIME := PlayerMovement.COYOTE_TIME
+const JUMP_BUFFER := PlayerMovement.JUMP_BUFFER
+const WALL_GRACE := PlayerMovement.WALL_GRACE
 const INPUT_TIMEOUT := 0.30
 
 var game
@@ -31,18 +33,15 @@ var visual_rig: PlayerVisualRig
 var target_position := Vector2.ZERO
 var target_velocity := Vector2.ZERO
 var last_remote_teleport_serial := 0
-var _coyote_left := 0.0
-var _jump_buffer_left := 0.0
-var _wall_grace_left := 0.0
+var movement_state: Dictionary = PlayerMovement.fresh_state()
 var _unarmed_cooldown := 0.0
-var _previous_jump := false
 var _previous_pickup := false
 var _previous_throw := false
 var _facing := 1.0
 var _squash := 0.0
 var _hit_flash := 0.0
-var _was_on_floor := false
 var _input_time_left := 0.0
+var _last_hit_source_id := 0
 
 func setup(game_manager, id: int, name_text: String, authoritative: bool) -> void:
 	game = game_manager
@@ -60,8 +59,8 @@ func setup(game_manager, id: int, name_text: String, authoritative: bool) -> voi
 	floor_max_angle = deg_to_rad(48.0)
 
 	var capsule := CapsuleShape2D.new()
-	capsule.radius = 18.0
-	capsule.height = 68.0
+	capsule.radius = 17.0
+	capsule.height = 64.0
 	var collision := CollisionShape2D.new()
 	collision.shape = capsule
 	add_child(collision)
@@ -93,9 +92,6 @@ func _physics_process(delta: float) -> void:
 	_unarmed_cooldown = maxf(_unarmed_cooldown - delta, 0.0)
 	_hit_flash = maxf(_hit_flash - delta, 0.0)
 	_squash = move_toward(_squash, 0.0, delta * 5.0)
-	if visual_rig:
-		visual_rig.queue_redraw()
-
 	if not simulation_enabled:
 		global_position = global_position.lerp(target_position, clampf(delta * 16.0, 0.0, 1.0))
 		velocity = velocity.lerp(target_velocity, clampf(delta * 12.0, 0.0, 1.0))
@@ -108,75 +104,34 @@ func _physics_process(delta: float) -> void:
 	if not alive:
 		ko_visual_left = maxf(ko_visual_left - delta, 0.0)
 		visible = ko_visual_left > 0.0
-		velocity.y += _gravity() * delta
-		velocity.x += game.wind_force * delta
-		move_and_slide()
+		PlayerMovement.simulate_passive(self, delta, game.gravity_multiplier, game.wind_force)
 		game.void_loop.process_body(self)
 		return
 
+	var was_on_floor := is_on_floor()
 	if not controls_locked:
-		_simulate_controls(delta)
+		movement_state = PlayerMovement.simulate(
+			self,
+			input_state,
+			delta,
+			movement_state,
+			game.speed_multiplier,
+			game.gravity_multiplier,
+			game.wind_force
+		)
+		_process_combat_actions()
 	else:
-		velocity.x = move_toward(velocity.x, 0.0, DECEL * delta)
-		velocity.y += _gravity() * delta
-
-	velocity.x += game.wind_force * delta
-	velocity.x = clampf(velocity.x, -VoidLoopManager.MAX_HORIZONTAL_SPEED, VoidLoopManager.MAX_HORIZONTAL_SPEED)
-	velocity.y = minf(velocity.y, VoidLoopManager.MAX_VERTICAL_SPEED)
-	_was_on_floor = is_on_floor()
-	move_and_slide()
-	if not _was_on_floor and is_on_floor() and velocity.y > -10.0:
+		PlayerMovement.simulate_passive(self, delta, game.gravity_multiplier, game.wind_force)
+	if not was_on_floor and is_on_floor() and velocity.y > -10.0:
 		_squash = 1.0
 		game.emit_effect("land", global_position, {"color": player_color})
 	game.void_loop.process_body(self)
+	if ImpactSystem.should_ko(global_position, MapController.ARENA_WIDTH, MapController.SKY_Y):
+		game.ko_player(self, _last_hit_source_id, velocity)
 	if velocity.y > 760.0:
 		game.check_body_slam(self)
 
-func _simulate_controls(delta: float) -> void:
-	var move_axis := clampf(float(input_state.get("move", 0.0)), -1.0, 1.0)
-	if absf(move_axis) > 0.05:
-		_facing = signf(move_axis)
-		var acceleration := GROUND_ACCEL if is_on_floor() else AIR_ACCEL
-		velocity.x = move_toward(velocity.x, move_axis * MOVE_SPEED * game.speed_multiplier, acceleration * delta)
-	else:
-		var braking := DECEL if is_on_floor() else AIR_ACCEL * 0.34
-		velocity.x = move_toward(velocity.x, 0.0, braking * delta)
-
-	if is_on_floor():
-		_coyote_left = COYOTE_TIME
-	else:
-		_coyote_left = maxf(_coyote_left - delta, 0.0)
-
-	var jump_held := bool(input_state.get("jump", false))
-	if jump_held and not _previous_jump:
-		_jump_buffer_left = JUMP_BUFFER
-	else:
-		_jump_buffer_left = maxf(_jump_buffer_left - delta, 0.0)
-	_previous_jump = jump_held
-
-	if is_on_wall_only():
-		_wall_grace_left = WALL_GRACE
-		if velocity.y > 185.0:
-			velocity.y = move_toward(velocity.y, 185.0, 1650.0 * delta)
-	else:
-		_wall_grace_left = maxf(_wall_grace_left - delta, 0.0)
-
-	if _jump_buffer_left > 0.0 and _coyote_left > 0.0:
-		velocity.y = -JUMP_SPEED * sqrt(game.gravity_multiplier)
-		_jump_buffer_left = 0.0
-		_coyote_left = 0.0
-	elif _jump_buffer_left > 0.0 and _wall_grace_left > 0.0:
-		var wall_normal := get_wall_normal()
-		if wall_normal == Vector2.ZERO:
-			wall_normal = Vector2(-_facing, 0)
-		velocity = Vector2(wall_normal.x * 430.0, -JUMP_SPEED * 0.92)
-		_jump_buffer_left = 0.0
-		_wall_grace_left = 0.0
-
-	if not jump_held and velocity.y < -210.0:
-		velocity.y += _gravity() * delta * 1.45
-	velocity.y += _gravity() * delta
-
+func _process_combat_actions() -> void:
 	var attack_held := bool(input_state.get("attack", false))
 	if attack_held:
 		if held_weapon_id > 0:
@@ -204,12 +159,14 @@ func apply_hit(damage: float, base_impulse: Vector2, source_player_id: int) -> v
 	velocity += impulse
 	velocity.x = clampf(velocity.x, -VoidLoopManager.MAX_HORIZONTAL_SPEED, VoidLoopManager.MAX_HORIZONTAL_SPEED)
 	velocity.y = clampf(velocity.y, -VoidLoopManager.MAX_VERTICAL_SPEED, VoidLoopManager.MAX_VERTICAL_SPEED)
+	_last_hit_source_id = source_player_id
+	movement_state.knockback_control_left = clampf(impulse.length() / 4200.0, 0.08, 0.22)
 	_hit_flash = 0.09
-	game.emit_effect("hit", global_position, {"color": player_color, "power": impulse.length()})
-	var relevant_force: float = base_impulse.length()
-	var should_ko: bool = ImpactSystem.should_ko(impact, damage, relevant_force)
-	if should_ko:
-		game.ko_player(self, source_player_id, impulse)
+	game.emit_effect("impact_player", global_position, {
+		"color": player_color,
+		"power": impulse.length(),
+		"direction_vector": impulse.normalized(),
+	})
 
 func mark_ko(final_impulse: Vector2) -> void:
 	alive = false
@@ -238,9 +195,10 @@ func reset_for_round(spawn_position: Vector2) -> void:
 	collision_mask = (2 | 4) if simulation_enabled else 0
 	input_state.clear()
 	_input_time_left = 0.0
-	_previous_jump = false
 	_previous_pickup = false
 	_previous_throw = false
+	movement_state = PlayerMovement.fresh_state()
+	_last_hit_source_id = 0
 	if visual_rig:
 		visual_rig.snap_after_teleport()
 
@@ -267,7 +225,6 @@ func _neutralize_stale_input() -> void:
 	input_state["attack"] = false
 	input_state["pickup"] = false
 	input_state["throw"] = false
-	_previous_jump = false
 	_previous_pickup = false
 	_previous_throw = false
 
@@ -298,7 +255,6 @@ func snapshot() -> Dictionary:
 		"impact": impact, "alive": alive, "visible": visible, "weapon": held_weapon_id,
 		"ax": aim_direction.x, "ay": aim_direction.y,
 		"t": int(get_meta("teleport_serial", 0)),
+		"grounded": is_on_floor(), "on_wall": is_on_wall_only(),
+		"knockback_control_left": float(movement_state.get("knockback_control_left", 0.0)),
 	}
-
-func _gravity() -> float:
-	return float(ProjectSettings.get_setting("physics/2d/default_gravity")) * game.gravity_multiplier

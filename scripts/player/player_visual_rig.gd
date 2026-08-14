@@ -59,6 +59,13 @@ func get_weapon_anchor_transform() -> Transform2D:
 func snap_after_teleport() -> void:
 	_snap_to_display_transform()
 
+func absorb_reconciliation_offset(world_offset: Vector2) -> void:
+	# Physics snaps to the authoritative replay immediately. Only the rendered
+	# rig eases the small correction, so collision and momentum stay exact.
+	if world_offset.length_squared() <= 0.01:
+		return
+	position += world_offset.limit_length(42.0)
+
 func _snap_to_display_transform() -> void:
 	position = Vector2.ZERO
 	rotation = 0.0

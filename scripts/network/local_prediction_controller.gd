@@ -22,11 +22,7 @@ var _local_teleport_serial := -1
 var _remote_buffers: Dictionary = {}
 var _remote_teleport_serials: Dictionary = {}
 var _latest_snapshot_arrival_msec := 0
-var _coyote_left := 0.0
-var _jump_buffer_left := 0.0
-var _wall_grace_left := 0.0
-var _previous_jump := false
-var _facing := 1.0
+var _movement_state: Dictionary = PlayerMovement.fresh_state()
 
 func setup(game_manager: GameManager, network_manager: NetworkManager) -> void:
 	game = game_manager
@@ -108,6 +104,10 @@ func reconcile_local(state: Dictionary, snapshot_tick: int) -> void:
 		_restore_prediction_state(acknowledged_record.get("prediction_state", {}))
 	else:
 		_reset_prediction_state(state)
+	_movement_state.knockback_control_left = maxf(
+		float(_movement_state.get("knockback_control_left", 0.0)),
+		float(state.get("knockback_control_left", 0.0))
+	)
 	prediction_error = predicted_at_ack.distance_to(authoritative_position)
 
 	var unacknowledged: Array[Dictionary] = []
@@ -130,18 +130,12 @@ func reconcile_local(state: Dictionary, snapshot_tick: int) -> void:
 	var reconciled_velocity := local_player.velocity
 	var velocity_error := previous_velocity.distance_to(reconciled_velocity)
 	if prediction_error >= SNAP_ERROR_PIXELS or velocity_error >= SNAP_VELOCITY_ERROR:
+		if local_player.visual_rig:
+			local_player.visual_rig.snap_after_teleport()
 		return
 
-	var correction_weight := 0.14
-	if prediction_error > SMALL_ERROR_PIXELS:
-		correction_weight = clampf(prediction_error / SNAP_ERROR_PIXELS, 0.28, 0.72)
-	local_player.global_position = previous_position.lerp(reconciled_position, correction_weight)
-	local_player.velocity = previous_velocity.lerp(reconciled_velocity, maxf(correction_weight, 0.42))
-	var position_offset := local_player.global_position - reconciled_position
-	var velocity_offset := local_player.velocity - reconciled_velocity
-	for record: Dictionary in pending_inputs:
-		record["predicted_position"] = Vector2(record.get("predicted_position", Vector2.ZERO)) + position_offset
-		record["predicted_velocity"] = Vector2(record.get("predicted_velocity", Vector2.ZERO)) + velocity_offset
+	if local_player.visual_rig and prediction_error > SMALL_ERROR_PIXELS:
+		local_player.visual_rig.absorb_reconciliation_offset(previous_position - reconciled_position)
 
 func push_remote_state(player: Player, state: Dictionary, snapshot_tick: int) -> void:
 	_apply_player_metadata(player, state)
@@ -230,63 +224,24 @@ func _render_remote_player(player: Player, buffer: Array, render_tick: float, ph
 func _simulate_movement(command: Dictionary, delta: float) -> void:
 	if local_player == null or not is_instance_valid(local_player):
 		return
-	var aim := Vector2(float(command.get("aim_x", _facing)), float(command.get("aim_y", 0.0)))
+	var aim := Vector2(float(command.get("aim_x", float(_movement_state.facing))), float(command.get("aim_y", 0.0)))
 	if aim.length_squared() > 0.08:
 		local_player.aim_direction = aim.normalized()
 		if absf(local_player.aim_direction.x) > 0.2:
-			_facing = signf(local_player.aim_direction.x)
+			_movement_state.facing = signf(local_player.aim_direction.x)
 	if not local_player.alive:
 		_update_local_weapon_visual()
 		return
 
-	var move_axis := clampf(float(command.get("move", 0.0)), -1.0, 1.0)
-	if absf(move_axis) > 0.05:
-		_facing = signf(move_axis)
-		var acceleration := Player.GROUND_ACCEL if local_player.is_on_floor() else Player.AIR_ACCEL
-		local_player.velocity.x = move_toward(local_player.velocity.x, move_axis * Player.MOVE_SPEED * game.speed_multiplier, acceleration * delta)
-	else:
-		var braking := Player.DECEL if local_player.is_on_floor() else Player.AIR_ACCEL * 0.34
-		local_player.velocity.x = move_toward(local_player.velocity.x, 0.0, braking * delta)
-
-	if local_player.is_on_floor():
-		_coyote_left = Player.COYOTE_TIME
-	else:
-		_coyote_left = maxf(_coyote_left - delta, 0.0)
-
-	var jump_held := bool(command.get("jump", false))
-	if jump_held and not _previous_jump:
-		_jump_buffer_left = Player.JUMP_BUFFER
-	else:
-		_jump_buffer_left = maxf(_jump_buffer_left - delta, 0.0)
-	_previous_jump = jump_held
-
-	if local_player.is_on_wall_only():
-		_wall_grace_left = Player.WALL_GRACE
-		if local_player.velocity.y > 185.0:
-			local_player.velocity.y = move_toward(local_player.velocity.y, 185.0, 1650.0 * delta)
-	else:
-		_wall_grace_left = maxf(_wall_grace_left - delta, 0.0)
-
-	if _jump_buffer_left > 0.0 and _coyote_left > 0.0:
-		local_player.velocity.y = -Player.JUMP_SPEED * sqrt(game.gravity_multiplier)
-		_jump_buffer_left = 0.0
-		_coyote_left = 0.0
-	elif _jump_buffer_left > 0.0 and _wall_grace_left > 0.0:
-		var wall_normal := local_player.get_wall_normal()
-		if wall_normal == Vector2.ZERO:
-			wall_normal = Vector2(-_facing, 0.0)
-		local_player.velocity = Vector2(wall_normal.x * 430.0, -Player.JUMP_SPEED * 0.92)
-		_jump_buffer_left = 0.0
-		_wall_grace_left = 0.0
-
-	var gravity := float(ProjectSettings.get_setting("physics/2d/default_gravity")) * game.gravity_multiplier
-	if not jump_held and local_player.velocity.y < -210.0:
-		local_player.velocity.y += gravity * delta * 1.45
-	local_player.velocity.y += gravity * delta
-	local_player.velocity.x += game.wind_force * delta
-	local_player.velocity.x = clampf(local_player.velocity.x, -VoidLoopManager.MAX_HORIZONTAL_SPEED, VoidLoopManager.MAX_HORIZONTAL_SPEED)
-	local_player.velocity.y = minf(local_player.velocity.y, VoidLoopManager.MAX_VERTICAL_SPEED)
-	local_player.move_and_slide()
+	_movement_state = PlayerMovement.simulate(
+		local_player,
+		command,
+		delta,
+		_movement_state,
+		game.speed_multiplier,
+		game.gravity_multiplier,
+		game.wind_force
+	)
 	_update_local_weapon_visual()
 
 func _update_local_weapon_visual() -> void:
@@ -307,34 +262,24 @@ func _apply_player_metadata(player: Player, state: Dictionary) -> void:
 	player.visible = bool(state.get("visible", true))
 	player.held_weapon_id = int(state.get("weapon", 0))
 	player.last_remote_teleport_serial = int(state.get("t", player.last_remote_teleport_serial))
-	var aim := Vector2(float(state.get("ax", _facing)), float(state.get("ay", 0.0)))
+	var aim := Vector2(float(state.get("ax", float(_movement_state.facing))), float(state.get("ay", 0.0)))
 	if aim.length_squared() > 0.001:
 		player.aim_direction = aim.normalized()
 
 func _capture_prediction_state() -> Dictionary:
-	return {
-		"coyote_left": _coyote_left,
-		"jump_buffer_left": _jump_buffer_left,
-		"wall_grace_left": _wall_grace_left,
-		"previous_jump": _previous_jump,
-		"facing": _facing,
-	}
+	return _movement_state.duplicate(true)
 
 func _restore_prediction_state(state: Dictionary) -> void:
 	if state.is_empty():
 		return
-	_coyote_left = float(state.get("coyote_left", 0.0))
-	_jump_buffer_left = float(state.get("jump_buffer_left", 0.0))
-	_wall_grace_left = float(state.get("wall_grace_left", 0.0))
-	_previous_jump = bool(state.get("previous_jump", false))
-	_facing = float(state.get("facing", 1.0))
+	_movement_state = state.duplicate(true)
 
 func _reset_prediction_state(state: Dictionary) -> void:
-	_coyote_left = Player.COYOTE_TIME if bool(state.get("grounded", false)) else 0.0
-	_jump_buffer_left = 0.0
-	_wall_grace_left = Player.WALL_GRACE if bool(state.get("on_wall", false)) else 0.0
-	_previous_jump = false
-	_facing = 1.0
+	_movement_state = PlayerMovement.fresh_state(
+		bool(state.get("grounded", false)),
+		bool(state.get("on_wall", false))
+	)
+	_movement_state.knockback_control_left = float(state.get("knockback_control_left", 0.0))
 
 func _command_delta(command: Dictionary) -> float:
 	return clampf(float(command.get("delta", 1.0 / 60.0)), 1.0 / 240.0, 1.0 / 20.0)
