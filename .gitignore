@@ -1,0 +1,5 @@
+.godot/
+logs/
+*.tmp
+*.log
+
