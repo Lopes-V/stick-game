@@ -52,6 +52,53 @@ func _run() -> void:
 	_check(first_prop.global_position.y < 0.0, "physical object uses Void Loop")
 	_check(first_prop.linear_velocity.y > 500.0, "physical object preserves vertical velocity")
 
+	var weapon_ids_before_delivery: Dictionary = {}
+	for weapon_id: int in game.weapons:
+		weapon_ids_before_delivery[weapon_id] = true
+	var weapon_count_before_delivery := game.weapons.size()
+	var deliveries_started := 0
+	for delivery_type: String in ["drop_pod", "wall_dispenser", "core", "drone"]:
+		var delivery = game.weapon_spawner.start_delivery(delivery_type, "pistol")
+		if delivery:
+			deliveries_started += 1
+	_check(deliveries_started == 4, "all four weapon delivery types start authoritatively")
+	_check(game.weapons.size() == weapon_count_before_delivery, "delivery telegraph does not spawn its weapon immediately")
+	await get_tree().create_timer(4.7).timeout
+	var delivered_weapons: Array[Weapon] = []
+	for weapon_id: int in game.weapons:
+		if not weapon_ids_before_delivery.has(weapon_id):
+			delivered_weapons.append(game.weapons[weapon_id] as Weapon)
+	_check(delivered_weapons.size() >= deliveries_started, "all four deliveries physically release a weapon")
+	var moving_deliveries := 0
+	for delivered_weapon: Weapon in delivered_weapons:
+		var initial_velocity: Vector2 = delivered_weapon.get_meta("delivery_initial_velocity", Vector2.ZERO)
+		if initial_velocity.length() > 20.0:
+			moving_deliveries += 1
+	_check(moving_deliveries >= deliveries_started, "delivered weapons enter the arena with physical velocity")
+	if not delivered_weapons.is_empty():
+		var pickup_weapon := delivered_weapons[0]
+		player_one.global_position = pickup_weapon.global_position + Vector2(8, 0)
+		game.try_pickup_weapon(player_one)
+		_check(player_one.held_weapon_id == pickup_weapon.weapon_id, "delivered weapon remains pickupable")
+		game.throw_held_weapon(player_one, Vector2.RIGHT)
+		pickup_weapon.global_position = Vector2(760, 1185)
+		pickup_weapon.linear_velocity = Vector2(120, 680)
+		await get_tree().physics_frame
+		await get_tree().physics_frame
+		_check(pickup_weapon.global_position.y < 0.0, "delivered weapon continues through the Void Loop")
+
+	var weapon_ids_before_rain: Dictionary = {}
+	for weapon_id: int in game.weapons:
+		weapon_ids_before_rain[weapon_id] = true
+	game.weapon_spawner.spawn_random_weapon(true)
+	var rain_weapon: Weapon
+	for weapon_id: int in game.weapons:
+		if not weapon_ids_before_rain.has(weapon_id):
+			rain_weapon = game.weapons[weapon_id] as Weapon
+			break
+	_check(rain_weapon != null and rain_weapon.global_position.y < MapController.SKY_Y, "Weapon Rain starts above the map")
+	_check(rain_weapon != null and rain_weapon.linear_velocity.length() > 0.0 and absf(rain_weapon.angular_velocity) > 0.01, "Weapon Rain starts with physical and angular velocity")
+
 	game.round_manager.round_elapsed = float(game.config.chaos_start_seconds)
 	game.chaos_director.tick(0.6, game.round_manager.round_elapsed)
 	_check(game.chaos_director.chaos_level >= 1, "Chaos activates from authoritative timer")
@@ -69,6 +116,8 @@ func _run() -> void:
 		game.map_controller.reset_map()
 		tested_events += 1
 	_check(tested_events >= 8, "at least eight modular Chaos events execute and stop")
+	var pending_delivery = game.weapon_spawner.start_delivery("drone", "pistol")
+	_check(pending_delivery != null, "delivery can be pending before round resolution")
 
 	player_two.impact = 250.0
 	player_two.apply_hit(6.0, Vector2(720, -240), player_one.player_id)
@@ -80,6 +129,7 @@ func _run() -> void:
 	await get_tree().create_timer(0.4).timeout
 	_check(game.get_alive_player_ids().size() == 1, "round authority sees last survivor")
 	_check(game.round_manager.state == "round_end", "RoundManager resolves the authoritative winner")
+	_check(game.weapon_spawner.active_deliveries.is_empty() and get_tree().get_nodes_in_group("weapon_deliveries").is_empty(), "round end removes every temporary delivery")
 	_check(int(game.round_manager.scores.get(player_one.player_id, 0)) == 1, "winner score increments")
 	await get_tree().create_timer(2.4).timeout
 	_check(game.round_manager.round_number == 2, "next round starts after reset delay")
