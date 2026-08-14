@@ -16,6 +16,7 @@ const AudioManagerScript := preload("res://scripts/core/audio_manager.gd")
 const LocalPredictionScript := preload("res://scripts/network/local_prediction_controller.gd")
 
 const MAX_SERVER_INPUT_BACKLOG := 8
+const MAX_ACTIVE_EFFECTS := 64
 
 var network: NetworkManager
 var config: Dictionary
@@ -287,24 +288,26 @@ func try_fire_weapon(player: Player, direction: Vector2) -> void:
 	weapon.consume_shot()
 	var shot_direction := direction.normalized() if direction.length_squared() > 0.1 else Vector2.RIGHT
 	if weapon.weapon_type == "katana":
+		weapon.apply_visual_recoil(float(data.recoil))
 		player.velocity += shot_direction * 165.0
 		perform_melee(player, shot_direction, not player.is_on_floor(), true)
 	else:
-		var projectile_type := "bullet"
-		if weapon.weapon_type == "rocket":
-			projectile_type = "rocket"
-		elif weapon.weapon_type == "grenade":
-			projectile_type = "grenade"
-		elif weapon.weapon_type == "sniper" or weapon.weapon_type == "golden":
-			projectile_type = "sniper"
+		var projectile_type := weapon.weapon_type
 		for pellet in int(data.pellets):
 			var spread := rng.randf_range(-float(data.spread), float(data.spread))
 			var pellet_direction := shot_direction.rotated(spread)
 			spawn_projectile(projectile_type, player.player_id, weapon.global_position + pellet_direction * 28.0, pellet_direction, float(data.speed), float(data.damage), float(data.force), data.color)
+		weapon.apply_visual_recoil(float(data.recoil))
+		var camera_strength := _weapon_camera_strength(weapon.weapon_type)
+		emit_effect("muzzle", weapon.global_position + shot_direction * 34.0, {
+			"color": data.color,
+			"power": float(data.recoil),
+			"direction_vector": shot_direction,
+			"weapon_id": weapon.weapon_id,
+			"weapon_type": weapon.weapon_type,
+			"camera_strength": camera_strength,
+		})
 	player.velocity -= shot_direction * float(data.recoil)
-	emit_effect("muzzle", weapon.global_position, {"color": data.color, "power": float(data.recoil)})
-	if float(data.recoil) >= 350.0:
-		network.broadcast_match_event("camera_shake", {"strength": minf(float(data.recoil) / 180.0, 5.0)})
 	if weapon.weapon_type == "golden" and weapon.ammo <= 0:
 		throw_held_weapon(player, -shot_direction)
 
@@ -320,7 +323,13 @@ func perform_melee(player: Player, direction: Vector2, air_attack: bool, katana 
 		if offset.length() <= reach and offset.normalized().dot(direction.normalized()) > -0.05:
 			target.apply_hit(damage, (direction.normalized() + Vector2.UP * 0.18).normalized() * force, player.player_id)
 			hit_any = true
-	emit_effect("slash" if katana else "hit", player.global_position + direction.normalized() * 38.0, {"color": player.player_color, "power": force})
+	emit_effect("slash" if katana else "hit", player.global_position + direction.normalized() * 38.0, {
+		"color": player.player_color,
+		"power": force,
+		"direction_vector": direction.normalized(),
+		"weapon_id": player.held_weapon_id if katana else 0,
+		"weapon_type": "katana" if katana else "unarmed",
+	})
 	if hit_any and katana:
 		player.velocity -= direction.normalized() * 60.0
 
@@ -344,9 +353,8 @@ func ko_player(player: Player, source_player_id: int, impulse: Vector2) -> void:
 	if player.held_weapon_id > 0:
 		throw_held_weapon(player, (impulse.normalized() + Vector2.UP * 0.35).normalized())
 	player.mark_ko(impulse)
-	emit_effect("ko", player.global_position, {"color": player.player_color, "power": impulse.length()})
+	emit_effect("ko", player.global_position, {"color": player.player_color, "power": impulse.length(), "direction_vector": impulse.normalized()})
 	network.broadcast_match_event("player_ko", {"player_id": player.player_id, "source_player_id": source_player_id})
-	network.broadcast_match_event("camera_shake", {"strength": 7.0})
 
 func spawn_weapon(weapon_type: String, at_position: Vector2) -> Weapon:
 	if not server_mode:
@@ -396,8 +404,7 @@ func explode(origin: Vector2, radius: float, force: float, damage: float, source
 		var offset := prop.global_position - origin
 		if offset.length() <= radius:
 			prop.take_damage(damage, offset.normalized() * force * (1.0 - offset.length() / radius) * 0.75)
-	emit_effect("explosion", origin, {"power": force, "color": Color("ff754d")})
-	network.broadcast_match_event("camera_shake", {"strength": clampf(force / 150.0, 3.0, 8.0)})
+	emit_effect("explosion", origin, {"power": force, "radius": radius, "color": Color("ff754d")})
 
 func core_shockwave(multiplier: float) -> void:
 	var core := map_controller.get_core_position()
@@ -413,7 +420,6 @@ func core_shockwave(multiplier: float) -> void:
 			var offset: Vector2 = rigid.global_position - core
 			rigid.apply_central_impulse(offset.normalized() * clampf(1000.0 - offset.length() * 0.4, 300.0, 1000.0) * multiplier)
 	emit_effect("core_shockwave", core, {"power": 600.0 * multiplier, "color": Color("67dfff")})
-	network.broadcast_match_event("camera_shake", {"strength": 10.0})
 
 func apply_core_force(strength: float, delta: float) -> void:
 	var core := map_controller.get_core_position()
@@ -483,7 +489,6 @@ func clear_round_entities(include_players: bool) -> void:
 		players.clear()
 
 func emit_effect(effect_type: String, at_position: Vector2, data: Dictionary) -> void:
-	audio_manager.play_event(effect_type, at_position, float(data.get("power", 1.0)))
 	if server_mode:
 		network.broadcast_match_event("effect", {"type": effect_type, "position": at_position, "data": data})
 	else:
@@ -498,6 +503,9 @@ func receive_match_event(event_name: String, payload: Dictionary) -> void:
 			local_prediction.reset_prediction()
 	elif event_name == "camera_shake" and camera_manager:
 		camera_manager.add_shake(float(payload.get("strength", 2.0)))
+		var kick_direction: Variant = payload.get("direction", Vector2.ZERO)
+		if kick_direction is Vector2:
+			camera_manager.add_impact(kick_direction, float(payload.get("kick", 0.0)))
 
 func debug_action(action: String) -> void:
 	if not server_mode:
@@ -766,10 +774,72 @@ func _update_test_bots() -> void:
 		})
 
 func _spawn_local_effect(effect_type: String, at_position: Vector2, data: Dictionary) -> void:
+	audio_manager.play_event(effect_type, at_position, float(data.get("power", 1.0)))
+	var active_effects := get_tree().get_nodes_in_group("combat_effects")
+	if active_effects.size() >= MAX_ACTIVE_EFFECTS:
+		var released_one := false
+		for candidate: Node in active_effects:
+			if not candidate.is_queued_for_deletion():
+				candidate.queue_free()
+				released_one = true
+				break
+		if not released_one and effect_type not in ["explosion", "core_shockwave", "ko"]:
+			return
 	var effect: EffectBurst = EffectBurstScript.new()
 	add_child(effect)
 	effect.global_position = at_position
 	effect.setup(effect_type, data)
+	_apply_local_feedback(effect_type, at_position, data)
+
+func _apply_local_feedback(effect_type: String, at_position: Vector2, data: Dictionary) -> void:
+	if camera_manager == null:
+		return
+	var effect_direction: Vector2 = data.get("direction_vector", Vector2.RIGHT)
+	match effect_type:
+		"muzzle":
+			var weapon: Weapon = weapons.get(int(data.get("weapon_id", 0)))
+			if weapon:
+				weapon.apply_visual_recoil(float(data.get("power", 0.0)))
+			var camera_strength := float(data.get("camera_strength", 0.0))
+			camera_manager.add_shake(camera_strength)
+			camera_manager.add_impact(-effect_direction, camera_strength * 0.72)
+		"slash":
+			var weapon: Weapon = weapons.get(int(data.get("weapon_id", 0)))
+			if weapon:
+				weapon.apply_visual_recoil(float(data.get("power", 0.0)))
+			camera_manager.add_impact(-effect_direction, 1.1)
+		"impact_player":
+			var impact_power := float(data.get("power", 0.0))
+			camera_manager.add_shake(clampf(impact_power / 260.0, 0.35, 3.2))
+			camera_manager.add_impact(-effect_direction, clampf(impact_power / 170.0, 0.7, 4.5))
+			if impact_power >= 600.0:
+				camera_manager.add_visual_hold(0.035)
+		"throw_impact":
+			camera_manager.add_shake(clampf(float(data.get("power", 0.0)) / 320.0, 0.35, 2.4))
+		"explosion":
+			var explosion_strength := clampf(float(data.get("power", 450.0)) / 150.0, 3.0, 8.0)
+			camera_manager.add_shake(explosion_strength)
+			camera_manager.add_world_impact(at_position, explosion_strength)
+			camera_manager.add_visual_hold(0.028)
+		"ko":
+			camera_manager.add_shake(7.0)
+			camera_manager.add_impact(-effect_direction, 6.0)
+			camera_manager.add_visual_hold(0.05)
+		"core_shockwave":
+			camera_manager.add_shake(10.0)
+			camera_manager.add_world_impact(at_position, 10.0)
+
+func _weapon_camera_strength(weapon_type: String) -> float:
+	match weapon_type:
+		"pistol": return 0.35
+		"rifle": return 0.55
+		"shotgun": return 2.0
+		"sniper": return 3.3
+		"rocket": return 5.0
+		"grenade": return 2.6
+		"golden": return 4.4
+		"cursed_shotgun": return 4.8
+		_: return 0.0
 
 func _read_seed_argument() -> int:
 	for argument: String in OS.get_cmdline_user_args():
