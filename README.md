@@ -93,9 +93,9 @@ expõe `WeaponAnchor`; sway/recoil da arma não alteram colisão nem o muzzle
 authoritative usado pelos tiros.
 
 O launcher prepara a exportação **sem threads** para funcionar por HTTP dentro
-da rede privada, sem instalar certificados em cada celular. Controles touch,
-teclado e mouse funcionam nesse modo. Alguns navegadores restringem a Gamepad
-API em HTTP; nesses casos use os controles touch/teclado ou configure HTTPS.
+da rede privada. O jogo é exclusivo para PC e usa teclado + mouse. Navegadores
+móveis exibem uma tela `PC ONLY` antes de qualquer conexão multiplayer; notebooks
+com touchscreen não são bloqueados apenas por possuírem toque.
 Como `AudioWorklet` também exige HTTPS, a build LAN usa automaticamente o
 driver de áudio Dummy. Isso não remove nenhum som atual, pois o protótipo ainda
 não depende de arquivos de áudio.
@@ -106,6 +106,11 @@ No Windows, execute `BUILD_WEB.bat`; no Linux, `./build_web.sh`. Ambos usam o
 preset `Web` de `export_presets.cfg` e geram `web_build/index.html` e os arquivos
 `.js`, `.wasm` e `.pck` correspondentes. `build_web.ps1` usa a mesma descoberta e
 validação robusta de Godot do launcher.
+
+`web_build/` é artefato local e não é versionado. `HOST_GAME.bat` detecta os
+arquivos ausentes e executa o build automaticamente; se os templates oficiais
+de exportação Web não estiverem instalados, o launcher informa claramente a
+falha e aponta seus logs.
 
 ## Controles
 
@@ -118,22 +123,15 @@ Teclado e mouse:
 - Clique direito ou `K`: arremessar arma.
 - `E`: pegar/trocar arma.
 
-Gamepad:
-
-- Left Stick: mover.
-- A/Cross: pular.
-- X/Square: atacar.
-- B/Circle: arremessar.
-- Y/Triangle: pegar.
-- Right Stick: mirar.
-
-Celulares exibem joysticks de movimento/mira e botões touch; use o aparelho em paisagem.
+Gamepad, joystick e controles touch não são suportados.
 
 Ferramentas do host: `F1` adiciona dummy, `F2` faz chover uma arma, `F3` inicia Chaos, `F4` força o próximo evento, `F5` reinicia o round e `F10` alterna o overlay de debug.
 
 ## Mecânicas
 
-Impact começa em 0% e aumenta com socos, tiros, explosões, objetos e body slams. O percentual multiplica knockback; KO é determinístico e exige Impact alto combinado com um golpe relevante.
+Impact começa em 0% e aumenta com socos, tiros, explosões, objetos e body slams.
+O percentual segue uma curva suave de knockback. Golpes não matam por threshold
+no centro: o KO ocorre ao cruzar os limites laterais ou o limite superior da arena.
 
 As sete armas-base são pistol, shotgun, rifle, sniper, rocket launcher, katana e grenade launcher. Armas soltas têm física, atravessam o Void Loop e causam impacto quando arremessadas. Golden Gun e Cursed Shotgun aparecem raramente no Chaos.
 

@@ -2,6 +2,9 @@
 logs/
 *.tmp
 *.log
+web_build/
+test-results/
+__pycache__/
 
 
 tools/godot/*.exe

@@ -16,7 +16,7 @@ Preservar, nesta ordem: inicialização, movimento responsivo, combate e knockba
 - `scripts/weapons/`: catálogo, armas físicas, projéteis e spawner.
 - `scripts/map/`: arena procedural e props/barrels físicos.
 - `scripts/chaos/`: `ChaosDirector`, base `ChaosEvent` e eventos modulares.
-- `scripts/ui/`: lobby, HUD, debug e controles touch.
+- `scripts/ui/`: lobby, HUD e debug para teclado e mouse.
 - `tools/`: servidor HTTP LAN sem dependências e smoke test.
 
 O cliente envia input, nunca posição, dano, KO, spawn, score ou evento Chaos. O servidor executa a física a 60 Hz e publica snapshots a 30 Hz. Atualizações com `teleport_serial` devem ser aplicadas com snap, sem interpolar através da arena.

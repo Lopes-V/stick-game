@@ -17,6 +17,86 @@ $gameProcess = $null
 $httpProcess = $null
 $processJob = $null
 $exitCode = 0
+$redirectedProcessState = @{}
+
+function Start-RedirectedProcess {
+    param(
+        [string]$FilePath,
+        [string]$Arguments,
+        [string]$StandardOutputPath,
+        [string]$StandardErrorPath
+    )
+
+    # Windows PowerShell's Start-Process can fail when the inherited Windows
+    # environment contains PATH and Path entries with different casing. Build
+    # ProcessStartInfo directly so the LAN launcher works in that environment.
+    $startInfo = [System.Diagnostics.ProcessStartInfo]::new()
+    $startInfo.FileName = $FilePath
+    $startInfo.Arguments = $Arguments
+    $startInfo.UseShellExecute = $false
+    $startInfo.CreateNoWindow = $true
+    $startInfo.RedirectStandardOutput = $true
+    $startInfo.RedirectStandardError = $true
+    $process = [System.Diagnostics.Process]::new()
+    $process.StartInfo = $startInfo
+    $stdout = [System.IO.FileStream]::new(
+        $StandardOutputPath,
+        [System.IO.FileMode]::Create,
+        [System.IO.FileAccess]::Write,
+        [System.IO.FileShare]::ReadWrite
+    )
+    $stderr = [System.IO.FileStream]::new(
+        $StandardErrorPath,
+        [System.IO.FileMode]::Create,
+        [System.IO.FileAccess]::Write,
+        [System.IO.FileShare]::ReadWrite
+    )
+    try {
+        $process.Start() | Out-Null
+        $stdoutTask = $process.StandardOutput.BaseStream.CopyToAsync($stdout)
+        $stderrTask = $process.StandardError.BaseStream.CopyToAsync($stderr)
+        $script:redirectedProcessState[$process.Id] = @{
+            Stdout = $stdout
+            Stderr = $stderr
+            Tasks = @($stdoutTask, $stderrTask)
+        }
+        return $process
+    } catch {
+        $stdout.Dispose()
+        $stderr.Dispose()
+        $process.Dispose()
+        throw
+    }
+}
+
+function Complete-RedirectedProcess {
+    param([System.Diagnostics.Process]$Process)
+
+    if (-not $Process) { return }
+    $state = $script:redirectedProcessState[$Process.Id]
+    if (-not $state) { return }
+    try {
+        if ($Process.HasExited) { $Process.WaitForExit() }
+        [System.Threading.Tasks.Task]::WhenAll([System.Threading.Tasks.Task[]]$state.Tasks).Wait(2000) | Out-Null
+    } catch {
+        # Process shutdown can cancel a pending stream read; the files still
+        # contain everything copied before termination.
+    } finally {
+        $state.Stdout.Flush()
+        $state.Stderr.Flush()
+        $state.Stdout.Dispose()
+        $state.Stderr.Dispose()
+        $script:redirectedProcessState.Remove($Process.Id)
+    }
+}
+
+function Open-HostBrowser {
+    param([string]$Url)
+
+    $startInfo = [System.Diagnostics.ProcessStartInfo]::new($Url)
+    $startInfo.UseShellExecute = $true
+    [System.Diagnostics.Process]::Start($startInfo) | Out-Null
+}
 
 function Get-LanAddress {
     try {
@@ -168,16 +248,17 @@ function Invoke-GodotProjectValidation {
     $quotedRoot = '"' + $Root.Replace('"', '\"') + '"'
     $arguments = "--headless --editor --path $quotedRoot --quit"
     Write-Host 'Validating the Godot project...'
-    $validationProcess = Start-Process -FilePath $GodotPath -ArgumentList $arguments `
-        -RedirectStandardOutput $stdoutPath -RedirectStandardError $stderrPath `
-        -WindowStyle Hidden -PassThru
+    $validationProcess = Start-RedirectedProcess -FilePath $GodotPath -Arguments $arguments `
+        -StandardOutputPath $stdoutPath -StandardErrorPath $stderrPath
     $Job.Add($validationProcess)
     if (-not $validationProcess.WaitForExit(60000)) {
         Stop-LauncherProcess -Process $validationProcess -Name 'project validation'
+        Complete-RedirectedProcess -Process $validationProcess
         Write-LogTail -Label 'project-validation-error.log' -Path $stderrPath
         Write-LogTail -Label 'project-validation.log' -Path $stdoutPath
         throw 'Godot project validation timed out after 60 seconds.'
     }
+    Complete-RedirectedProcess -Process $validationProcess
 
     $parsePattern = 'SCRIPT ERROR|Parse Error|Compile Error|Failed to load script'
     $parseFailure = Select-String -Path $stdoutPath, $stderrPath -Pattern $parsePattern -ErrorAction SilentlyContinue
@@ -261,28 +342,33 @@ try {
     Invoke-GodotProjectValidation -GodotPath $godot -Root $projectRoot -LogDirectory $logDir -Job $processJob
 
     $quotedProjectRoot = '"' + $projectRoot.Replace('"', '\"') + '"'
-    $gameArguments = "--headless --path $quotedProjectRoot -- --server --server-bind=$internalGameBind --internal-game-port=$internalGamePort"
+    $quotedGodotLog = '"' + "$logDir\godot-runtime.log".Replace('"', '\"') + '"'
+    $gameArguments = "--headless --log-file $quotedGodotLog --path $quotedProjectRoot -- --server --server-bind=$internalGameBind --internal-game-port=$internalGamePort"
     $httpScript = '"' + "$projectRoot\tools\lan_http_server.py".Replace('"', '\"') + '"'
     $httpDirectory = '"' + "$projectRoot\web_build".Replace('"', '\"') + '"'
     $httpArguments = "$httpScript --directory $httpDirectory --port $httpPort --websocket-upstream-host $internalGameBind --websocket-upstream-port $internalGamePort"
 
-    $gameProcess = Start-Process -FilePath $godot -ArgumentList $gameArguments `
-        -RedirectStandardOutput "$logDir\game-server.log" `
-        -RedirectStandardError "$logDir\game-server-error.log" `
-        -WindowStyle Hidden -PassThru
+    $gameProcess = Start-RedirectedProcess -FilePath $godot -Arguments $gameArguments `
+        -StandardOutputPath "$logDir\game-server.log" `
+        -StandardErrorPath "$logDir\game-server-error.log"
     $processJob.Add($gameProcess)
 
     $gameReady = $false
-    foreach ($attempt in 1..40) {
+    foreach ($attempt in 1..150) {
         $gameProcess.Refresh()
         if ($gameProcess.HasExited) { throw 'Game server exited before opening its WebSocket port.' }
         if (Test-OwnedTcpPort -Port $internalGamePort -ProcessId $gameProcess.Id -LocalAddress $internalGameBind) {
             $gameReady = $true
             break
         }
-        Start-Sleep -Milliseconds 150
+        Start-Sleep -Milliseconds 200
     }
-    if (-not $gameReady) { throw "Game server did not open $internalGameBind`:$internalGamePort within 6 seconds." }
+    if (-not $gameReady) {
+        $ownedListeners = @(Get-NetTCPConnection -State Listen -ErrorAction SilentlyContinue | Where-Object { $_.OwningProcess -eq $gameProcess.Id })
+        $portListeners = @(Get-NetTCPConnection -State Listen -LocalPort $internalGamePort -ErrorAction SilentlyContinue)
+        $portOwners = @($portListeners | ForEach-Object { "$($_.LocalAddress) PID $($_.OwningProcess)" })
+        throw "Game server PID $($gameProcess.Id) did not open $internalGameBind`:$internalGamePort within 30 seconds; owned listeners: $($ownedListeners.LocalAddress -join ', '); port owners: $($portOwners -join ', ')."
+    }
     if (Test-OwnedTcpPort -Port $internalGamePort -ProcessId $gameProcess.Id -LocalAddress '0.0.0.0') {
         throw "Internal Godot port $internalGamePort is exposed on 0.0.0.0 instead of localhost."
     }
@@ -290,10 +376,9 @@ try {
         throw "Internal Godot port $internalGamePort is exposed on [::] instead of localhost."
     }
 
-    $httpProcess = Start-Process -FilePath $python -ArgumentList $httpArguments `
-        -RedirectStandardOutput "$logDir\http-server.log" `
-        -RedirectStandardError "$logDir\http-server-error.log" `
-        -WindowStyle Hidden -PassThru
+    $httpProcess = Start-RedirectedProcess -FilePath $python -Arguments $httpArguments `
+        -StandardOutputPath "$logDir\http-server.log" `
+        -StandardErrorPath "$logDir\http-server-error.log"
     $processJob.Add($httpProcess)
 
     $healthy = $false
@@ -352,7 +437,7 @@ try {
     if ($HealthCheckOnly) {
         Write-Host 'HOST_HEALTH_CHECK_PASS' -ForegroundColor Green
     } else {
-        if (-not $NoBrowser) { Start-Process $localUrl }
+        if (-not $NoBrowser) { Open-HostBrowser -Url $localUrl }
         Wait-ForHostStop -Game $gameProcess -Http $httpProcess
     }
 } catch {
@@ -365,6 +450,8 @@ try {
     $httpExited = $false
     if ($gameProcess) { try { $gameProcess.Refresh(); $gameExited = $gameProcess.HasExited } catch { $gameExited = $true } }
     if ($httpProcess) { try { $httpProcess.Refresh(); $httpExited = $httpProcess.HasExited } catch { $httpExited = $true } }
+    if ($gameExited) { Complete-RedirectedProcess -Process $gameProcess }
+    if ($httpExited) { Complete-RedirectedProcess -Process $httpProcess }
     if ($gameProcess -and ($gameExited -or $failureMessage -match 'Game server|WebSocket|Health check')) {
         Write-ServerFailureLogs -LogDirectory $logDir
     }
@@ -375,6 +462,8 @@ try {
     $startedAnyProcess = $null -ne $gameProcess -or $null -ne $httpProcess
     Stop-LauncherProcess -Process $httpProcess -Name 'HTTP server'
     Stop-LauncherProcess -Process $gameProcess -Name 'game server'
+    Complete-RedirectedProcess -Process $httpProcess
+    Complete-RedirectedProcess -Process $gameProcess
     if ($processJob) { $processJob.Dispose() }
     if ($startedAnyProcess) { Write-Host 'Chaos Stick Arena host stopped.' }
 }
