@@ -237,7 +237,7 @@ func _build_overlays() -> void:
 
 	debug_label = Label.new()
 	debug_label.position = Vector2(16, 185)
-	debug_label.size = Vector2(360, 220)
+	debug_label.size = Vector2(400, 290)
 	debug_label.add_theme_font_size_override("font_size", 15)
 	debug_label.add_theme_color_override("font_color", Color("9fffd3"))
 	debug_label.visible = false
@@ -363,10 +363,16 @@ func _update_debug() -> void:
 	var velocity_text := "n/a"
 	if local_player:
 		velocity_text = "(%.0f, %.0f)" % [local_player.velocity.x, local_player.velocity.y]
-	debug_label.text = "DEBUG F10\nFPS: %d\nAlive: %d\nChaos: %d\nEvents: %s\nRigid bodies: %d\nProjectiles: %d\nLocal velocity: %s\nSeed: %d\nState tick: %d" % [
+	var network_stats := game.get_network_debug_stats()
+	var ping_text := "n/a"
+	if float(network_stats.get("ping_msec", -1.0)) >= 0.0:
+		ping_text = "%.0f ms" % float(network_stats.ping_msec)
+	debug_label.text = "DEBUG F10\nFPS: %d\nAlive: %d\nChaos: %d\nEvents: %s\nRigid bodies: %d\nProjectiles: %d\nLocal velocity: %s\nPing/ack: %s\nPending inputs: %d\nPrediction error: %.1f px\nLast ack: %d\nTeleport serial: %d\nSeed: %d\nSnapshot tick: %d" % [
 		Engine.get_frames_per_second(), game.get_alive_player_ids().size(), game.chaos_level,
 		", ".join(game.client_chaos_events), game.weapons.size() + game.props.size(),
-		game.projectiles.size(), velocity_text, game.match_seed, game._last_snapshot_tick,
+		game.projectiles.size(), velocity_text, ping_text, int(network_stats.pending_inputs),
+		float(network_stats.prediction_error), int(network_stats.last_acknowledged_sequence),
+		int(network_stats.teleport_serial), game.match_seed, int(network_stats.snapshot_tick),
 	]
 
 func _show_notice(text: String, duration: float) -> void:

@@ -68,6 +68,11 @@ func send_input(input_state: Dictionary) -> void:
 	if local_player_id > 0:
 		submit_input.rpc_id(1, input_state)
 
+func send_inputs(input_commands: Array[Dictionary]) -> void:
+	if local_player_id <= 0 or input_commands.is_empty():
+		return
+	submit_input.rpc_id(1, {"commands": input_commands})
+
 func broadcast_snapshot(snapshot: Dictionary) -> void:
 	if server_mode:
 		for peer_id: int in _open_human_peer_ids():
@@ -186,12 +191,23 @@ func request_start() -> void:
 	broadcast_lobby()
 
 @rpc("any_peer", "call_remote", "unreliable_ordered", 1)
-func submit_input(input_state: Dictionary) -> void:
+func submit_input(input_payload: Dictionary) -> void:
 	if not server_mode:
 		return
 	var player_id := player_id_for_peer(multiplayer.get_remote_sender_id())
-	if player_id > 0:
-		game.receive_player_input(player_id, input_state)
+	if player_id <= 0:
+		return
+	var commands: Variant = input_payload.get("commands", [])
+	if input_payload.has("commands") and commands is Array:
+		var accepted := 0
+		for command: Variant in commands:
+			if command is Dictionary:
+				game.receive_player_input(player_id, command)
+				accepted += 1
+				if accepted >= 8:
+					break
+	else:
+		game.receive_player_input(player_id, input_payload)
 
 @rpc("any_peer", "call_remote", "reliable")
 func request_debug(action: String) -> void:
