@@ -298,6 +298,20 @@ func _run() -> void:
 	_check(game.get_alive_player_ids().size() == game.players.size(), "round 3 restores every connected player")
 	_check(game.chaos_level == 0 and game.gravity_multiplier == 1.0 and not game.map_controller.moving_enabled and not game.map_controller.floor_panic_enabled, "second reset restores map and Chaos modifiers")
 	_check(_round_runtime_is_clean(), "round 3 starts without leaked deliveries, weapons, projectiles, props, or temporary nodes")
+
+	await get_tree().create_timer(3.35).timeout
+	_check(game.round_manager.state == "playing", "round 3 reaches playing state")
+	game.round_manager.scores[player_one.player_id] = int(game.config.score_to_win) - 1
+	for player: Player in game.players.values():
+		player.controls_locked = true
+		if player.player_id != player_one.player_id and player.alive:
+			game.ko_player(player, player_one.player_id, Vector2(760.0, -260.0))
+	await get_tree().create_timer(1.0).timeout
+	_check(game.round_manager.state == "match_end", "first-to-five resolves the authoritative match")
+	_check(int(game.round_manager.scores.get(player_one.player_id, 0)) == int(game.config.score_to_win), "match winner reaches the configured score")
+	await get_tree().create_timer(4.6).timeout
+	_check(game.round_manager.state == "lobby", "match reset returns to lobby")
+	_check(game.players.is_empty() and _round_runtime_is_clean(), "match reset removes every arena runtime node")
 	_finish()
 
 func _round_runtime_is_clean() -> bool:
