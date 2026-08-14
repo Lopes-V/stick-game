@@ -15,6 +15,7 @@ var game_ui
 func _ready() -> void:
 	config = GameConfig.load_config()
 	var user_args := OS.get_cmdline_user_args()
+	_apply_network_overrides(user_args)
 	server_mode = user_args.has("--server") or (DisplayServer.get_name() == "headless" and not user_args.has("--client"))
 
 	network = NetworkManagerScript.new()
@@ -35,10 +36,10 @@ func _ready() -> void:
 func _start_server() -> void:
 	var error: Error = network.start_server()
 	if error != OK:
-		push_error("Unable to start WebSocket game server on port %s: %s" % [config.game_port, error_string(error)])
+		push_error("Unable to start internal WebSocket game server on %s:%s: %s" % [config.internal_game_bind, config.internal_game_port, error_string(error)])
 		get_tree().quit(2)
 		return
-	print("CHAOS_STICK_SERVER_READY port=%s seed=%s" % [config.game_port, game.match_seed])
+	print("CHAOS_STICK_SERVER_READY bind=%s port=%s seed=%s" % [config.internal_game_bind, config.internal_game_port, game.match_seed])
 	if OS.get_cmdline_user_args().has("--auto-start") and network.get_roster().size() >= 2:
 		game.start_match(network.get_roster())
 	if OS.get_cmdline_user_args().has("--smoke-test"):
@@ -68,13 +69,31 @@ func _start_client() -> void:
 			network.submit_local_name(argument.trim_prefix("--name="))
 
 func _get_server_url() -> String:
-	var host := "127.0.0.1"
 	if OS.has_feature("web"):
-		var bridge: Variant = JavaScriptBridge.eval("window.location.hostname", true)
+		var bridge: Variant = JavaScriptBridge.eval(
+			"(window.location.protocol === 'https:' ? 'wss://' : 'ws://') + window.location.host + '/ws'",
+			true
+		)
 		if bridge != null and not str(bridge).is_empty():
-			host = str(bridge)
-	else:
-		for argument: String in OS.get_cmdline_user_args():
-			if argument.begins_with("--connect="):
-				host = argument.trim_prefix("--connect=")
-	return "ws://%s:%s" % [host, config.game_port]
+			return str(bridge)
+		return "ws://127.0.0.1:%s/ws" % config.http_port
+
+	var host := "127.0.0.1"
+	var port := int(config.internal_game_port)
+	for argument: String in OS.get_cmdline_user_args():
+		if argument.begins_with("--connect-url="):
+			return argument.trim_prefix("--connect-url=")
+		if argument.begins_with("--connect="):
+			host = argument.trim_prefix("--connect=")
+		if argument.begins_with("--connect-port="):
+			port = int(argument.trim_prefix("--connect-port="))
+	if host.contains(":") and not host.begins_with("["):
+		host = "[%s]" % host
+	return "ws://%s:%s" % [host, port]
+
+func _apply_network_overrides(user_args: PackedStringArray) -> void:
+	for argument: String in user_args:
+		if argument.begins_with("--server-bind="):
+			config.internal_game_bind = argument.trim_prefix("--server-bind=")
+		if argument.begins_with("--internal-game-port="):
+			config.internal_game_port = int(argument.trim_prefix("--internal-game-port="))

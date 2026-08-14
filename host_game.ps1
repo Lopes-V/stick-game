@@ -10,8 +10,9 @@ $projectRoot = $PSScriptRoot
 . "$projectRoot\tools\launcher_process_job.ps1"
 
 $config = Get-Content -LiteralPath "$projectRoot\server_config.json" -Raw | ConvertFrom-Json
-$gamePort = [int]$config.game_port
 $httpPort = [int]$config.http_port
+$internalGamePort = [int]$config.internal_game_port
+$internalGameBind = [string]$config.internal_game_bind
 $gameProcess = $null
 $httpProcess = $null
 $processJob = $null
@@ -59,13 +60,42 @@ function Assert-TcpPortAvailable {
 function Test-OwnedTcpPort {
     param(
         [int]$Port,
-        [int]$ProcessId
+        [int]$ProcessId,
+        [string]$LocalAddress
     )
 
-    $listener = Get-NetTCPConnection -State Listen -LocalPort $Port -ErrorAction SilentlyContinue |
-        Where-Object { $_.OwningProcess -eq $ProcessId } |
-        Select-Object -First 1
+    $listeners = Get-NetTCPConnection -State Listen -LocalPort $Port -ErrorAction SilentlyContinue |
+        Where-Object { $_.OwningProcess -eq $ProcessId }
+    if ($LocalAddress) {
+        $listeners = $listeners | Where-Object { $_.LocalAddress -eq $LocalAddress }
+    }
+    $listener = $listeners | Select-Object -First 1
     return $null -ne $listener
+}
+
+function Test-WebSocketProxy {
+    param(
+        [int]$Port,
+        [int]$TimeoutMilliseconds = 2000
+    )
+
+    $socket = [System.Net.WebSockets.ClientWebSocket]::new()
+    $cancellation = [System.Threading.CancellationTokenSource]::new()
+    $cancellation.CancelAfter($TimeoutMilliseconds)
+    try {
+        $socket.Options.SetRequestHeader('Origin', "http://127.0.0.1:$Port")
+        $uri = [Uri]::new("ws://127.0.0.1:$Port/ws")
+        $socket.ConnectAsync($uri, $cancellation.Token).GetAwaiter().GetResult()
+        return $socket.State -eq [System.Net.WebSockets.WebSocketState]::Open
+    } catch {
+        return $false
+    } finally {
+        if ($socket.State -eq [System.Net.WebSockets.WebSocketState]::Open) {
+            $socket.Abort()
+        }
+        $socket.Dispose()
+        $cancellation.Dispose()
+    }
 }
 
 function Write-LogTail {
@@ -189,6 +219,10 @@ try {
     $godotInfo = Find-Godot -ProjectRoot $projectRoot
     $godot = $godotInfo.Path
 
+    if ($internalGameBind -ne '127.0.0.1') {
+        throw "The LAN launcher requires internal_game_bind to be 127.0.0.1, got '$internalGameBind'. Use --server-bind explicitly only for manual debug runs."
+    }
+
     Write-Host "Using Godot: $godot"
     Write-Host "Godot version: $($godotInfo.Version)"
     Write-Host "Godot source: $($godotInfo.Source)"
@@ -214,23 +248,23 @@ try {
         "Godot version: $($godotInfo.Version)",
         "Godot source: $($godotInfo.Source)",
         "Project root: $projectRoot",
-        "Game port: $gamePort",
-        "HTTP port: $httpPort"
+        "Public HTTP/WebSocket: 0.0.0.0:$httpPort",
+        "Internal Godot: $internalGameBind`:$internalGamePort"
     )
     $diagnostics | Set-Content -LiteralPath "$logDir\launcher.log" -Encoding UTF8
     $diagnostics | ForEach-Object { Write-Host $_ }
 
-    Assert-TcpPortAvailable -Port $gamePort -ServiceName 'Game server'
-    Assert-TcpPortAvailable -Port $httpPort -ServiceName 'HTTP server'
+    Assert-TcpPortAvailable -Port $httpPort -ServiceName 'Public LAN HTTP/WebSocket server'
+    Assert-TcpPortAvailable -Port $internalGamePort -ServiceName 'Internal Godot server'
 
     $processJob = New-LauncherProcessJob
     Invoke-GodotProjectValidation -GodotPath $godot -Root $projectRoot -LogDirectory $logDir -Job $processJob
 
     $quotedProjectRoot = '"' + $projectRoot.Replace('"', '\"') + '"'
-    $gameArguments = "--headless --path $quotedProjectRoot -- --server"
+    $gameArguments = "--headless --path $quotedProjectRoot -- --server --server-bind=$internalGameBind --internal-game-port=$internalGamePort"
     $httpScript = '"' + "$projectRoot\tools\lan_http_server.py".Replace('"', '\"') + '"'
     $httpDirectory = '"' + "$projectRoot\web_build".Replace('"', '\"') + '"'
-    $httpArguments = "$httpScript --directory $httpDirectory --port $httpPort"
+    $httpArguments = "$httpScript --directory $httpDirectory --port $httpPort --websocket-upstream-host $internalGameBind --websocket-upstream-port $internalGamePort"
 
     $gameProcess = Start-Process -FilePath $godot -ArgumentList $gameArguments `
         -RedirectStandardOutput "$logDir\game-server.log" `
@@ -242,13 +276,19 @@ try {
     foreach ($attempt in 1..40) {
         $gameProcess.Refresh()
         if ($gameProcess.HasExited) { throw 'Game server exited before opening its WebSocket port.' }
-        if (Test-OwnedTcpPort -Port $gamePort -ProcessId $gameProcess.Id) {
+        if (Test-OwnedTcpPort -Port $internalGamePort -ProcessId $gameProcess.Id -LocalAddress $internalGameBind) {
             $gameReady = $true
             break
         }
         Start-Sleep -Milliseconds 150
     }
-    if (-not $gameReady) { throw "Game server did not open port $gamePort within 6 seconds." }
+    if (-not $gameReady) { throw "Game server did not open $internalGameBind`:$internalGamePort within 6 seconds." }
+    if (Test-OwnedTcpPort -Port $internalGamePort -ProcessId $gameProcess.Id -LocalAddress '0.0.0.0') {
+        throw "Internal Godot port $internalGamePort is exposed on 0.0.0.0 instead of localhost."
+    }
+    if (Test-OwnedTcpPort -Port $internalGamePort -ProcessId $gameProcess.Id -LocalAddress '::') {
+        throw "Internal Godot port $internalGamePort is exposed on [::] instead of localhost."
+    }
 
     $httpProcess = Start-Process -FilePath $python -ArgumentList $httpArguments `
         -RedirectStandardOutput "$logDir\http-server.log" `
@@ -267,18 +307,23 @@ try {
             $httpResponse = Invoke-WebRequest -UseBasicParsing -Uri "http://127.0.0.1:$httpPort/status" -TimeoutSec 1
             $httpOk = $httpResponse.StatusCode -eq 200 -and [string]$httpResponse.Headers['Server'] -like 'ChaosStickHTTP/*'
         } catch {}
-        $httpOwned = Test-OwnedTcpPort -Port $httpPort -ProcessId $httpProcess.Id
-        $gameOwned = Test-OwnedTcpPort -Port $gamePort -ProcessId $gameProcess.Id
+        $httpOwned = Test-OwnedTcpPort -Port $httpPort -ProcessId $httpProcess.Id -LocalAddress '0.0.0.0'
+        $gameOwned = Test-OwnedTcpPort -Port $internalGamePort -ProcessId $gameProcess.Id -LocalAddress $internalGameBind
+        $webSocketOk = $false
         if ($httpOk -and $httpOwned -and $gameOwned) {
+            $webSocketOk = Test-WebSocketProxy -Port $httpPort
+        }
+        if ($httpOk -and $httpOwned -and $gameOwned -and $webSocketOk) {
             $healthy = $true
             break
         }
         Start-Sleep -Milliseconds 200
     }
-    if (-not $healthy) { throw 'Health check failed: HTTP or WebSocket server did not become available.' }
+    if (-not $healthy) { throw 'Health check failed: HTTP /status or WebSocket /ws did not become available.' }
 
     $lanIp = Get-LanAddress
     $roomUrl = "http://${lanIp}:$httpPort"
+    $webSocketUrl = "ws://${lanIp}:$httpPort/ws"
     $localUrl = "http://localhost:$httpPort"
     Clear-Host
     Write-Host '========================================' -ForegroundColor Cyan
@@ -286,17 +331,23 @@ try {
     Write-Host '========================================' -ForegroundColor Cyan
     Write-Host "Godot:      $godot"
     Write-Host "Version:    $($godotInfo.Version)"
-    Write-Host 'Game Server: ONLINE' -ForegroundColor Green
-    Write-Host 'Web Server:  ONLINE' -ForegroundColor Green
+    Write-Host 'Godot Server: ONLINE (localhost only)' -ForegroundColor Green
+    Write-Host 'LAN Gateway:  ONLINE' -ForegroundColor Green
     Write-Host "Players:     0/$($config.max_players)"
     Write-Host "Local IP:    $lanIp"
     Write-Host ''
-    Write-Host 'ROOM LINK:' -ForegroundColor Yellow
+    Write-Host 'PUBLIC LAN:' -ForegroundColor Yellow
     Write-Host $roomUrl -ForegroundColor White
     Write-Host ''
+    Write-Host 'WebSocket:' -ForegroundColor Yellow
+    Write-Host $webSocketUrl -ForegroundColor White
+    Write-Host ''
+    Write-Host 'Internal Godot:' -ForegroundColor Yellow
+    Write-Host "$internalGameBind`:$internalGamePort" -ForegroundColor White
+    Write-Host ''
     Write-Host "Host browser: $localUrl"
-    Write-Host 'Send the ROOM LINK to players on the same Wi-Fi/Ethernet.'
-    Write-Host "If access fails, allow TCP ports $httpPort and $gamePort in Windows Firewall."
+    Write-Host 'Send the PUBLIC LAN link to players on the same Wi-Fi/Ethernet.'
+    Write-Host "Remote clients only need TCP $httpPort; port $internalGamePort stays on localhost."
     Write-Host '========================================' -ForegroundColor Cyan
     if ($HealthCheckOnly) {
         Write-Host 'HOST_HEALTH_CHECK_PASS' -ForegroundColor Green

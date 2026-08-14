@@ -55,8 +55,8 @@ Fluxo recomendado no Windows:
 
 1. Dê duplo clique em `HOST_GAME.bat`.
 2. O launcher valida Python e Godot, verifica o projeto e a build Web, inicia o
-   servidor Godot headless na porta `9000`, inicia HTTP na `8080` e só então
-   mostra `ONLINE`.
+   servidor Godot headless somente em `127.0.0.1:9000`, inicia o gateway
+   HTTP/WebSocket em `0.0.0.0:8080` e só então mostra `ONLINE`.
 3. O navegador do host abre `http://localhost:8080`.
 4. Envie o link `http://IP_DA_LAN:8080` mostrado na tela para 1–3 pessoas na mesma rede.
 5. Todos informam o nome, marcam `READY`, e o primeiro navegador (host da sala) usa `START GAME`.
@@ -67,10 +67,17 @@ Servidor manual:
 
 ```text
 godot --headless --path . -- --server
-python tools/lan_http_server.py --directory web_build --port 8080
+python tools/lan_http_server.py --directory web_build --port 8080 --websocket-upstream-port 9000
 ```
 
-O cliente Web deriva o WebSocket de `window.location.hostname`; não existe IP hardcoded. As portas, limite de jogadores, início do Chaos e pontuação ficam em `server_config.json`.
+O cliente Web deriva o WebSocket de `window.location.host` e conecta em
+`ws://IP_DA_LAN:8080/ws`; não existe IP hardcoded. O mesmo processo Python serve
+os arquivos Web e encaminha `/ws` de forma transparente para o Godot em
+`127.0.0.1:9000`. As portas pública e interna, limite de jogadores, início do
+Chaos e pontuação ficam em `server_config.json`. Clientes nativos de debug podem
+usar conexão direta com `--connect=HOST --connect-port=PORT` ou
+`--connect-url=ws://HOST:PORT` e o servidor pode receber um bind manual com
+`--server-bind=ENDERECO`.
 
 O servidor mantém a física authoritative a 60 Hz. O cliente captura comandos de
 movimento a 60 Hz, agrupa dois comandos por pacote e envia 30 pacotes/s; o
@@ -148,7 +155,13 @@ O último jogador vivo marca um ponto. A arena, modificadores, objetos temporár
 
 ## Rede e firewall
 
-O HTTP usa `8080/TCP`; o jogo WebSocket usa `9000/TCP`. O launcher não altera o Windows Firewall. Caso outro aparelho não conecte, confirme que ambos estão na mesma rede, que a rede do Windows está como privada e permita manualmente a Godot/Python ou essas duas portas. Redes de convidados podem bloquear comunicação entre dispositivos.
+Somente `8080/TCP` precisa estar acessível na LAN: arquivos Web, `/status` e o
+WebSocket `/ws` compartilham essa porta. O Godot escuta apenas em
+`127.0.0.1:9000`, que não precisa nem deve ser acessível pelos outros aparelhos.
+O launcher não exige privilégios administrativos, não altera o Windows Firewall
+e não configura o roteador. Se `8080` ainda estiver bloqueada, a política da rede
+ou do computador precisa permitir essa única porta; redes de convidados também
+podem bloquear comunicação entre dispositivos.
 
 ## Validação rápida
 

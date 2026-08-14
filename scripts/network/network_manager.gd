@@ -27,7 +27,10 @@ func setup(game_manager, loaded_config: Dictionary, is_server: bool) -> void:
 
 func start_server() -> Error:
 	socket_peer = WebSocketMultiplayerPeer.new()
-	var error := socket_peer.create_server(int(config.game_port), "*")
+	var error := socket_peer.create_server(
+		int(config.internal_game_port),
+		str(config.internal_game_bind)
+	)
 	if error != OK:
 		return error
 	multiplayer.multiplayer_peer = socket_peer

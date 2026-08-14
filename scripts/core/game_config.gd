@@ -3,7 +3,8 @@ extends RefCounted
 
 const DEFAULTS := {
 	"http_port": 8080,
-	"game_port": 9000,
+	"internal_game_port": 9000,
+	"internal_game_bind": "127.0.0.1",
 	"max_players": 4,
 	"chaos_start_seconds": 30.0,
 	"score_to_win": 5,
