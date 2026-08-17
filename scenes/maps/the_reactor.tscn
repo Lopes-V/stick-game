@@ -1,0 +1,376 @@
+[gd_scene load_steps=8 format=3]
+
+[ext_resource type="Script" path="res://scripts/map/reactor_visuals.gd" id="1_visuals"]
+
+[sub_resource type="RectangleShape2D" id="Rectangle_lower"]
+size = Vector2(390, 36)
+
+[sub_resource type="RectangleShape2D" id="Rectangle_core"]
+size = Vector2(300, 32)
+
+[sub_resource type="RectangleShape2D" id="Rectangle_mid"]
+size = Vector2(260, 28)
+
+[sub_resource type="RectangleShape2D" id="Rectangle_upper"]
+size = Vector2(380, 28)
+
+[sub_resource type="RectangleShape2D" id="Rectangle_wall"]
+size = Vector2(26, 260)
+
+[node name="TheReactor" type="Node2D"]
+script = ExtResource("1_visuals")
+
+[node name="Background" type="Node2D" parent="."]
+z_index = -30
+
+[node name="IndustrialVoid" type="Polygon2D" parent="Background"]
+polygon = PackedVector2Array(-220, -520, 1580, -520, 1580, 1120, -220, 1120)
+color = Color(0.012, 0.022, 0.047, 1)
+
+[node name="LowerVoid" type="Polygon2D" parent="Background"]
+polygon = PackedVector2Array(-220, 700, 1580, 700, 1580, 1120, -220, 1120)
+color = Color(0.07, 0.014, 0.065, 0.94)
+
+[node name="BackTowerLeft" type="Polygon2D" parent="Background"]
+polygon = PackedVector2Array(-20, 80, 145, 35, 195, 700, -55, 700)
+color = Color(0.045, 0.08, 0.12, 0.82)
+
+[node name="BackTowerRight" type="Polygon2D" parent="Background"]
+polygon = PackedVector2Array(1215, 35, 1380, 80, 1415, 700, 1165, 700)
+color = Color(0.045, 0.08, 0.12, 0.82)
+
+[node name="BackBraceLeft" type="Line2D" parent="Background"]
+points = PackedVector2Array(70, 690, 510, 40)
+width = 16.0
+default_color = Color(0.07, 0.16, 0.2, 0.42)
+
+[node name="BackBraceRight" type="Line2D" parent="Background"]
+points = PackedVector2Array(1290, 690, 850, 40)
+width = 16.0
+default_color = Color(0.07, 0.16, 0.2, 0.42)
+
+[node name="GridTop" type="Line2D" parent="Background"]
+points = PackedVector2Array(0, 145, 1360, 145)
+width = 3.0
+default_color = Color(0.12, 0.35, 0.4, 0.24)
+
+[node name="GridMid" type="Line2D" parent="Background"]
+points = PackedVector2Array(0, 470, 1360, 470)
+width = 2.0
+default_color = Color(0.12, 0.35, 0.4, 0.18)
+
+[node name="VoidHorizon" type="Line2D" parent="Background"]
+points = PackedVector2Array(-40, 770, 1400, 770)
+width = 5.0
+default_color = Color(0.92, 0.11, 0.3, 0.58)
+
+[node name="VoidHorizonEcho" type="Line2D" parent="Background"]
+points = PackedVector2Array(-40, 792, 1400, 792)
+width = 2.0
+default_color = Color(0.26, 0.75, 0.95, 0.24)
+
+[node name="SignalLights" type="Node2D" parent="Background"]
+
+[node name="WarningLeft" type="Polygon2D" parent="Background/SignalLights"]
+polygon = PackedVector2Array(95, 105, 105, 95, 115, 105, 105, 115)
+color = Color(1, 0.3, 0.25, 1)
+
+[node name="WarningMid" type="Polygon2D" parent="Background/SignalLights"]
+polygon = PackedVector2Array(670, 105, 680, 95, 690, 105, 680, 115)
+color = Color(1, 0.68, 0.22, 1)
+
+[node name="WarningRight" type="Polygon2D" parent="Background/SignalLights"]
+polygon = PackedVector2Array(1245, 105, 1255, 95, 1265, 105, 1255, 115)
+color = Color(1, 0.3, 0.25, 1)
+
+[node name="CoreVisuals" type="Node2D" parent="."]
+position = Vector2(680, 660)
+z_index = -3
+
+[node name="CoreGlow" type="Polygon2D" parent="CoreVisuals"]
+polygon = PackedVector2Array(-105, 0, -74, -74, 0, -105, 74, -74, 105, 0, 74, 74, 0, 105, -74, 74)
+color = Color(0.16, 0.72, 1, 0.17)
+
+[node name="OuterRing" type="Line2D" parent="CoreVisuals"]
+points = PackedVector2Array(-92, 0, -65, -65, 0, -92, 65, -65, 92, 0, 65, 65, 0, 92, -65, 65, -92, 0)
+width = 7.0
+default_color = Color(0.45, 0.9, 1, 0.88)
+
+[node name="InnerRing" type="Line2D" parent="CoreVisuals"]
+points = PackedVector2Array(-61, 0, -43, -43, 0, -61, 43, -43, 61, 0, 43, 43, 0, 61, -43, 43, -61, 0)
+width = 5.0
+default_color = Color(0.25, 0.58, 0.75, 0.92)
+
+[node name="Energy" type="Polygon2D" parent="CoreVisuals"]
+polygon = PackedVector2Array(-35, 0, -24, -24, 0, -35, 24, -24, 35, 0, 24, 24, 0, 35, -24, 24)
+color = Color(0.35, 0.88, 1, 1)
+
+[node name="CorePedestal" type="Polygon2D" parent="."]
+z_index = -4
+polygon = PackedVector2Array(570, 700, 610, 632, 750, 632, 790, 700)
+color = Color(0.1, 0.16, 0.2, 1)
+
+[node name="CorePedestalTrim" type="Line2D" parent="."]
+z_index = -3
+points = PackedVector2Array(570, 700, 610, 632, 750, 632, 790, 700)
+width = 5.0
+default_color = Color(0.2, 0.58, 0.66, 0.75)
+
+[node name="Gameplay" type="Node2D" parent="."]
+
+[node name="OuterWalls" type="Node2D" parent="Gameplay"]
+
+[node name="LeftWall" type="StaticBody2D" parent="Gameplay/OuterWalls"]
+position = Vector2(70, 500)
+collision_layer = 2
+collision_mask = 0
+
+[node name="Visual" type="Polygon2D" parent="Gameplay/OuterWalls/LeftWall"]
+polygon = PackedVector2Array(-13, -130, 13, -130, 13, 130, -13, 130)
+color = Color(0.16, 0.25, 0.29, 1)
+
+[node name="Edge" type="Line2D" parent="Gameplay/OuterWalls/LeftWall"]
+points = PackedVector2Array(13, -130, 13, 130)
+width = 4.0
+default_color = Color(0.35, 0.9, 0.95, 0.9)
+
+[node name="Collision" type="CollisionShape2D" parent="Gameplay/OuterWalls/LeftWall"]
+shape = SubResource("Rectangle_wall")
+
+[node name="RightWall" type="StaticBody2D" parent="Gameplay/OuterWalls"]
+position = Vector2(1290, 500)
+collision_layer = 2
+collision_mask = 0
+
+[node name="Visual" type="Polygon2D" parent="Gameplay/OuterWalls/RightWall"]
+polygon = PackedVector2Array(-13, -130, 13, -130, 13, 130, -13, 130)
+color = Color(0.16, 0.25, 0.29, 1)
+
+[node name="Edge" type="Line2D" parent="Gameplay/OuterWalls/RightWall"]
+points = PackedVector2Array(-13, -130, -13, 130)
+width = 4.0
+default_color = Color(0.35, 0.9, 0.95, 0.9)
+
+[node name="Collision" type="CollisionShape2D" parent="Gameplay/OuterWalls/RightWall"]
+shape = SubResource("Rectangle_wall")
+
+[node name="LowerRecoveryArea" type="Node2D" parent="Gameplay"]
+
+[node name="FloorAlert" type="Polygon2D" parent="Gameplay/LowerRecoveryArea"]
+visible = false
+z_index = -1
+polygon = PackedVector2Array(70, 596, 470, 596, 470, 644, 70, 644, 890, 596, 1290, 596, 1290, 644, 890, 644)
+color = Color(1, 0.16, 0.12, 0)
+
+[node name="FloorPanicDecks" type="Node2D" parent="Gameplay/LowerRecoveryArea"]
+
+[node name="LowerLeft" type="StaticBody2D" parent="Gameplay/LowerRecoveryArea/FloorPanicDecks"]
+position = Vector2(275, 620)
+collision_layer = 2
+collision_mask = 0
+
+[node name="Visual" type="Polygon2D" parent="Gameplay/LowerRecoveryArea/FloorPanicDecks/LowerLeft"]
+polygon = PackedVector2Array(-195, -18, 195, -18, 195, 18, -195, 18)
+color = Color(0.16, 0.27, 0.31, 1)
+
+[node name="Top" type="Line2D" parent="Gameplay/LowerRecoveryArea/FloorPanicDecks/LowerLeft"]
+points = PackedVector2Array(-195, -18, 195, -18)
+width = 5.0
+default_color = Color(0.42, 0.9, 0.94, 1)
+
+[node name="Collision" type="CollisionShape2D" parent="Gameplay/LowerRecoveryArea/FloorPanicDecks/LowerLeft"]
+shape = SubResource("Rectangle_lower")
+
+[node name="LowerRight" type="StaticBody2D" parent="Gameplay/LowerRecoveryArea/FloorPanicDecks"]
+position = Vector2(1085, 620)
+collision_layer = 2
+collision_mask = 0
+
+[node name="Visual" type="Polygon2D" parent="Gameplay/LowerRecoveryArea/FloorPanicDecks/LowerRight"]
+polygon = PackedVector2Array(-195, -18, 195, -18, 195, 18, -195, 18)
+color = Color(0.16, 0.27, 0.31, 1)
+
+[node name="Top" type="Line2D" parent="Gameplay/LowerRecoveryArea/FloorPanicDecks/LowerRight"]
+points = PackedVector2Array(-195, -18, 195, -18)
+width = 5.0
+default_color = Color(0.42, 0.9, 0.94, 1)
+
+[node name="Collision" type="CollisionShape2D" parent="Gameplay/LowerRecoveryArea/FloorPanicDecks/LowerRight"]
+shape = SubResource("Rectangle_lower")
+
+[node name="CentralCoreDeck" type="StaticBody2D" parent="Gameplay/LowerRecoveryArea"]
+position = Vector2(680, 520)
+collision_layer = 2
+collision_mask = 0
+
+[node name="Visual" type="Polygon2D" parent="Gameplay/LowerRecoveryArea/CentralCoreDeck"]
+polygon = PackedVector2Array(-150, -16, 150, -16, 150, 16, -150, 16)
+color = Color(0.19, 0.3, 0.34, 1)
+
+[node name="Top" type="Line2D" parent="Gameplay/LowerRecoveryArea/CentralCoreDeck"]
+points = PackedVector2Array(-150, -16, 150, -16)
+width = 5.0
+default_color = Color(1, 0.62, 0.25, 1)
+
+[node name="Collision" type="CollisionShape2D" parent="Gameplay/LowerRecoveryArea/CentralCoreDeck"]
+shape = SubResource("Rectangle_core")
+
+[node name="UpperCatwalk" type="Node2D" parent="Gameplay"]
+
+[node name="MovingPlatforms" type="Node2D" parent="Gameplay/UpperCatwalk"]
+
+[node name="MaintenanceLiftLeft" type="AnimatableBody2D" parent="Gameplay/UpperCatwalk/MovingPlatforms"]
+position = Vector2(365, 420)
+collision_layer = 2
+collision_mask = 0
+metadata/platform_id = "maintenance_lift_left"
+
+[node name="Visual" type="Polygon2D" parent="Gameplay/UpperCatwalk/MovingPlatforms/MaintenanceLiftLeft"]
+polygon = PackedVector2Array(-130, -14, 130, -14, 130, 14, -130, 14)
+color = Color(0.17, 0.28, 0.32, 1)
+
+[node name="Top" type="Line2D" parent="Gameplay/UpperCatwalk/MovingPlatforms/MaintenanceLiftLeft"]
+points = PackedVector2Array(-130, -14, 130, -14)
+width = 5.0
+default_color = Color(0.4, 0.88, 0.96, 1)
+
+[node name="Collision" type="CollisionShape2D" parent="Gameplay/UpperCatwalk/MovingPlatforms/MaintenanceLiftLeft"]
+shape = SubResource("Rectangle_mid")
+
+[node name="MaintenanceLiftRight" type="AnimatableBody2D" parent="Gameplay/UpperCatwalk/MovingPlatforms"]
+position = Vector2(995, 420)
+collision_layer = 2
+collision_mask = 0
+metadata/platform_id = "maintenance_lift_right"
+
+[node name="Visual" type="Polygon2D" parent="Gameplay/UpperCatwalk/MovingPlatforms/MaintenanceLiftRight"]
+polygon = PackedVector2Array(-130, -14, 130, -14, 130, 14, -130, 14)
+color = Color(0.17, 0.28, 0.32, 1)
+
+[node name="Top" type="Line2D" parent="Gameplay/UpperCatwalk/MovingPlatforms/MaintenanceLiftRight"]
+points = PackedVector2Array(-130, -14, 130, -14)
+width = 5.0
+default_color = Color(0.4, 0.88, 0.96, 1)
+
+[node name="Collision" type="CollisionShape2D" parent="Gameplay/UpperCatwalk/MovingPlatforms/MaintenanceLiftRight"]
+shape = SubResource("Rectangle_mid")
+
+[node name="UpperCenter" type="StaticBody2D" parent="Gameplay/UpperCatwalk"]
+position = Vector2(680, 330)
+collision_layer = 2
+collision_mask = 0
+
+[node name="Visual" type="Polygon2D" parent="Gameplay/UpperCatwalk/UpperCenter"]
+polygon = PackedVector2Array(-190, -14, 190, -14, 190, 14, -190, 14)
+color = Color(0.18, 0.29, 0.33, 1)
+
+[node name="Top" type="Line2D" parent="Gameplay/UpperCatwalk/UpperCenter"]
+points = PackedVector2Array(-190, -14, 190, -14)
+width = 5.0
+default_color = Color(1, 0.62, 0.25, 1)
+
+[node name="Collision" type="CollisionShape2D" parent="Gameplay/UpperCatwalk/UpperCenter"]
+shape = SubResource("Rectangle_upper")
+
+[node name="Markers" type="Node2D" parent="."]
+
+[node name="CorePosition" type="Marker2D" parent="Markers"]
+position = Vector2(680, 660)
+
+[node name="PlayerSpawns" type="Node2D" parent="Markers"]
+
+[node name="P1" type="Marker2D" parent="Markers/PlayerSpawns"]
+position = Vector2(220, 568)
+
+[node name="P2" type="Marker2D" parent="Markers/PlayerSpawns"]
+position = Vector2(1140, 568)
+
+[node name="P3" type="Marker2D" parent="Markers/PlayerSpawns"]
+position = Vector2(250, 368)
+
+[node name="P4" type="Marker2D" parent="Markers/PlayerSpawns"]
+position = Vector2(1110, 368)
+
+[node name="WeaponSpawns" type="Node2D" parent="Markers"]
+
+[node name="Upper" type="Marker2D" parent="Markers/WeaponSpawns"]
+position = Vector2(680, 275)
+
+[node name="MidLeftInner" type="Marker2D" parent="Markers/WeaponSpawns"]
+position = Vector2(475, 365)
+
+[node name="MidRightInner" type="Marker2D" parent="Markers/WeaponSpawns"]
+position = Vector2(885, 365)
+
+[node name="Core" type="Marker2D" parent="Markers/WeaponSpawns"]
+position = Vector2(680, 468)
+
+[node name="LowerLeft" type="Marker2D" parent="Markers/WeaponSpawns"]
+position = Vector2(450, 566)
+
+[node name="LowerRight" type="Marker2D" parent="Markers/WeaponSpawns"]
+position = Vector2(910, 566)
+
+[node name="Delivery" type="Node2D" parent="Markers"]
+
+[node name="DropPods" type="Node2D" parent="Markers/Delivery"]
+
+[node name="Left" type="Marker2D" parent="Markers/Delivery/DropPods"]
+position = Vector2(365, 300)
+
+[node name="Right" type="Marker2D" parent="Markers/Delivery/DropPods"]
+position = Vector2(995, 300)
+
+[node name="Dispensers" type="Node2D" parent="Markers/Delivery"]
+
+[node name="Left" type="Marker2D" parent="Markers/Delivery/Dispensers"]
+position = Vector2(105, 490)
+
+[node name="Right" type="Marker2D" parent="Markers/Delivery/Dispensers"]
+position = Vector2(1255, 490)
+
+[node name="CoreEjection" type="Node2D" parent="Markers/Delivery"]
+
+[node name="Muzzle" type="Marker2D" parent="Markers/Delivery/CoreEjection"]
+position = Vector2(680, 470)
+
+[node name="DronePath" type="Node2D" parent="Markers/Delivery"]
+
+[node name="Left" type="Marker2D" parent="Markers/Delivery/DronePath"]
+position = Vector2(-120, 160)
+
+[node name="Right" type="Marker2D" parent="Markers/Delivery/DronePath"]
+position = Vector2(1480, 160)
+
+[node name="PhysicsProps" type="Node2D" parent="Markers"]
+
+[node name="Crates" type="Node2D" parent="Markers/PhysicsProps"]
+[node name="CrateLeft" type="Marker2D" parent="Markers/PhysicsProps/Crates"]
+position = Vector2(420, 560)
+[node name="CrateRight" type="Marker2D" parent="Markers/PhysicsProps/Crates"]
+position = Vector2(940, 560)
+
+[node name="Barrels" type="Node2D" parent="Markers/PhysicsProps"]
+[node name="BarrelLeft" type="Marker2D" parent="Markers/PhysicsProps/Barrels"]
+position = Vector2(365, 365)
+[node name="BarrelRight" type="Marker2D" parent="Markers/PhysicsProps/Barrels"]
+position = Vector2(995, 365)
+
+[node name="MetalDebris" type="Node2D" parent="Markers/PhysicsProps"]
+[node name="Pipes" type="Node2D" parent="Markers/PhysicsProps"]
+
+[node name="HangingObjects" type="Node2D" parent="Markers/PhysicsProps"]
+
+[node name="Areas" type="Node2D" parent="Markers"]
+[node name="Upper" type="Marker2D" parent="Markers/Areas"]
+position = Vector2(680, 290)
+[node name="MidLeft" type="Marker2D" parent="Markers/Areas"]
+position = Vector2(365, 385)
+[node name="MidRight" type="Marker2D" parent="Markers/Areas"]
+position = Vector2(995, 385)
+[node name="Core" type="Marker2D" parent="Markers/Areas"]
+position = Vector2(680, 490)
+[node name="LowerLeft" type="Marker2D" parent="Markers/Areas"]
+position = Vector2(275, 580)
+[node name="LowerRight" type="Marker2D" parent="Markers/Areas"]
+position = Vector2(1085, 580)

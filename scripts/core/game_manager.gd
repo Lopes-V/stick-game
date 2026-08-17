@@ -13,6 +13,11 @@ const ChaosDirectorScript := preload("res://scripts/chaos/chaos_director.gd")
 const EffectBurstScript := preload("res://scripts/effects/effect_burst.gd")
 const CameraManagerScript := preload("res://scripts/core/camera_manager.gd")
 const AudioManagerScript := preload("res://scripts/core/audio_manager.gd")
+const LocalPredictionScript := preload("res://scripts/network/local_prediction_controller.gd")
+
+const MAX_SERVER_INPUT_BACKLOG := 8
+const MAX_ACTIVE_EFFECTS := 28
+const MAX_ACTIVE_PROJECTILES := 64
 
 var network: NetworkManager
 var config: Dictionary
@@ -44,11 +49,20 @@ var _next_projectile_id := 1
 var _next_prop_id := 1
 var _snapshot_left := 0.0
 var _pending_bombs: Array[Dictionary] = []
+var _server_input_queues: Dictionary = {}
+var _last_received_input_sequences: Dictionary = {}
+var _last_applied_inputs: Dictionary = {}
+var _last_processed_input_sequences: Dictionary = {}
+var _last_processed_client_times: Dictionary = {}
 var _client_round_state: Dictionary = {"state": "lobby", "round": 0, "elapsed": 0.0, "scores": {}}
 var _last_snapshot_tick := 0
 var camera_manager
 var client_chaos_events: Array[String] = []
 var audio_manager: AudioManager
+var local_prediction: LocalPredictionController
+var measured_physics_fps := 0.0
+var _debug_physics_ticks := 0
+var _debug_physics_elapsed := 0.0
 
 func setup(network_manager: NetworkManager, loaded_config: Dictionary, is_server: bool) -> void:
 	network = network_manager
@@ -84,15 +98,28 @@ func setup(network_manager: NetworkManager, loaded_config: Dictionary, is_server
 	audio_manager = AudioManagerScript.new()
 	audio_manager.name = "AudioManager"
 	add_child(audio_manager)
+	audio_manager.setup(self)
 	if not server_mode:
+		local_prediction = LocalPredictionScript.new()
+		local_prediction.name = "LocalPredictionController"
+		add_child(local_prediction)
+		local_prediction.setup(self, network)
 		camera_manager = CameraManagerScript.new()
 		camera_manager.name = "CameraManager"
 		add_child(camera_manager)
 		camera_manager.setup(self)
 
 func _physics_process(delta: float) -> void:
+	_debug_physics_ticks += 1
+	_debug_physics_elapsed += delta
+	if _debug_physics_elapsed >= 0.5:
+		measured_physics_fps = float(_debug_physics_ticks) / _debug_physics_elapsed
+		_debug_physics_ticks = 0
+		_debug_physics_elapsed = 0.0
 	if not server_mode:
 		return
+	_finalize_processed_inputs()
+	_process_server_input_queues()
 	_update_test_bots()
 	round_manager.tick(delta)
 	if round_manager.state in ["countdown", "playing"]:
@@ -120,6 +147,7 @@ func start_match(roster: Array) -> void:
 	network.broadcast_match_event("match_started", {"seed": match_seed})
 
 func prepare_round(roster: Array) -> void:
+	_clear_queued_inputs()
 	clear_round_entities(false)
 	reset_modifiers()
 	void_loop.reset()
@@ -144,6 +172,7 @@ func stop_round_systems() -> void:
 func return_to_lobby() -> void:
 	if not server_mode:
 		return
+	_clear_queued_inputs()
 	clear_round_entities(true)
 	reset_modifiers()
 	chaos_director.stop_all()
@@ -157,9 +186,18 @@ func return_to_lobby() -> void:
 	network.broadcast_match_event("returned_to_lobby", {})
 
 func receive_player_input(player_id: int, input_state: Dictionary) -> void:
-	var player: Player = players.get(player_id)
-	if player:
-		player.set_network_input(input_state)
+	if not server_mode or not players.has(player_id):
+		return
+	var sanitized := _sanitize_input(input_state)
+	if sanitized.is_empty():
+		return
+	var sequence := int(sanitized.sequence)
+	if sequence <= int(_last_received_input_sequences.get(player_id, -1)):
+		return
+	_last_received_input_sequences[player_id] = sequence
+	var queue: Array = _server_input_queues.get(player_id, [])
+	queue.append(sanitized)
+	_server_input_queues[player_id] = queue
 
 func handle_player_disconnect(player_id: int) -> void:
 	var player: Player = players.get(player_id)
@@ -169,6 +207,11 @@ func handle_player_disconnect(player_id: int) -> void:
 		player.alive = false
 		player.queue_free()
 		players.erase(player_id)
+	_server_input_queues.erase(player_id)
+	_last_received_input_sequences.erase(player_id)
+	_last_applied_inputs.erase(player_id)
+	_last_processed_input_sequences.erase(player_id)
+	_last_processed_client_times.erase(player_id)
 	round_manager.handle_disconnect(player_id)
 
 func get_player(player_id: int) -> Player:
@@ -198,6 +241,26 @@ func get_match_state() -> String:
 func get_round_state() -> Dictionary:
 	return round_manager.snapshot() if server_mode else _client_round_state
 
+func predict_local_input(command: Dictionary) -> void:
+	if not server_mode and local_prediction:
+		local_prediction.predict_input(command)
+
+func reset_local_prediction() -> void:
+	if not server_mode and local_prediction:
+		local_prediction.reset_prediction()
+
+func get_network_debug_stats() -> Dictionary:
+	if local_prediction:
+		return local_prediction.debug_stats()
+	return {
+		"ping_msec": -1.0,
+		"pending_inputs": 0,
+		"prediction_error": 0.0,
+		"last_acknowledged_sequence": -1,
+		"snapshot_tick": _last_snapshot_tick,
+		"teleport_serial": -1,
+	}
+
 func try_pickup_weapon(player: Player) -> void:
 	if not player.alive:
 		return
@@ -225,7 +288,7 @@ func throw_held_weapon(player: Player, direction: Vector2) -> void:
 		player.held_weapon_id = 0
 		return
 	var throw_direction := direction.normalized() if direction.length_squared() > 0.1 else Vector2(player.aim_direction.x, -0.15).normalized()
-	weapon.global_position = player.global_position + throw_direction * 34.0
+	weapon.global_position = player.get_gameplay_weapon_position(throw_direction)
 	weapon.drop(throw_direction * 720.0 + player.velocity * 0.55)
 
 func try_fire_weapon(player: Player, direction: Vector2) -> void:
@@ -236,24 +299,27 @@ func try_fire_weapon(player: Player, direction: Vector2) -> void:
 	weapon.consume_shot()
 	var shot_direction := direction.normalized() if direction.length_squared() > 0.1 else Vector2.RIGHT
 	if weapon.weapon_type == "katana":
+		weapon.apply_visual_recoil(float(data.recoil))
 		player.velocity += shot_direction * 165.0
 		perform_melee(player, shot_direction, not player.is_on_floor(), true)
 	else:
-		var projectile_type := "bullet"
-		if weapon.weapon_type == "rocket":
-			projectile_type = "rocket"
-		elif weapon.weapon_type == "grenade":
-			projectile_type = "grenade"
-		elif weapon.weapon_type == "sniper" or weapon.weapon_type == "golden":
-			projectile_type = "sniper"
+		var projectile_type := weapon.weapon_type
+		var gameplay_muzzle := player.get_gameplay_muzzle_position(shot_direction)
 		for pellet in int(data.pellets):
 			var spread := rng.randf_range(-float(data.spread), float(data.spread))
 			var pellet_direction := shot_direction.rotated(spread)
-			spawn_projectile(projectile_type, player.player_id, weapon.global_position + pellet_direction * 28.0, pellet_direction, float(data.speed), float(data.damage), float(data.force), data.color)
+			spawn_projectile(projectile_type, player.player_id, gameplay_muzzle, pellet_direction, float(data.speed), float(data.damage), float(data.force), data.color)
+		weapon.apply_visual_recoil(float(data.recoil))
+		var camera_strength := _weapon_camera_strength(weapon.weapon_type)
+		emit_effect("muzzle", gameplay_muzzle, {
+			"color": data.color,
+			"power": float(data.recoil),
+			"direction_vector": shot_direction,
+			"weapon_id": weapon.weapon_id,
+			"weapon_type": weapon.weapon_type,
+			"camera_strength": camera_strength,
+		})
 	player.velocity -= shot_direction * float(data.recoil)
-	emit_effect("muzzle", weapon.global_position, {"color": data.color, "power": float(data.recoil)})
-	if float(data.recoil) >= 350.0:
-		network.broadcast_match_event("camera_shake", {"strength": minf(float(data.recoil) / 180.0, 5.0)})
 	if weapon.weapon_type == "golden" and weapon.ammo <= 0:
 		throw_held_weapon(player, -shot_direction)
 
@@ -269,7 +335,13 @@ func perform_melee(player: Player, direction: Vector2, air_attack: bool, katana 
 		if offset.length() <= reach and offset.normalized().dot(direction.normalized()) > -0.05:
 			target.apply_hit(damage, (direction.normalized() + Vector2.UP * 0.18).normalized() * force, player.player_id)
 			hit_any = true
-	emit_effect("slash" if katana else "hit", player.global_position + direction.normalized() * 38.0, {"color": player.player_color, "power": force})
+	emit_effect("slash" if katana else "hit", player.global_position + direction.normalized() * 38.0, {
+		"color": player.player_color,
+		"power": force,
+		"direction_vector": direction.normalized(),
+		"weapon_id": player.held_weapon_id if katana else 0,
+		"weapon_type": "katana" if katana else "unarmed",
+	})
 	if hit_any and katana:
 		player.velocity -= direction.normalized() * 60.0
 
@@ -293,9 +365,8 @@ func ko_player(player: Player, source_player_id: int, impulse: Vector2) -> void:
 	if player.held_weapon_id > 0:
 		throw_held_weapon(player, (impulse.normalized() + Vector2.UP * 0.35).normalized())
 	player.mark_ko(impulse)
-	emit_effect("ko", player.global_position, {"color": player.player_color, "power": impulse.length()})
+	emit_effect("ko", player.global_position, {"color": player.player_color, "power": impulse.length(), "direction_vector": impulse.normalized()})
 	network.broadcast_match_event("player_ko", {"player_id": player.player_id, "source_player_id": source_player_id})
-	network.broadcast_match_event("camera_shake", {"strength": 7.0})
 
 func spawn_weapon(weapon_type: String, at_position: Vector2) -> Weapon:
 	if not server_mode:
@@ -310,7 +381,7 @@ func spawn_weapon(weapon_type: String, at_position: Vector2) -> Weapon:
 	return weapon
 
 func spawn_projectile(type: String, owner_id: int, at_position: Vector2, direction: Vector2, speed: float, damage: float, force: float, color: Color) -> Projectile:
-	if projectiles.size() >= 120:
+	if projectiles.size() >= MAX_ACTIVE_PROJECTILES:
 		var oldest_id := int(projectiles.keys()[0])
 		remove_projectile(oldest_id)
 	var projectile: Projectile = ProjectileScript.new()
@@ -345,8 +416,7 @@ func explode(origin: Vector2, radius: float, force: float, damage: float, source
 		var offset := prop.global_position - origin
 		if offset.length() <= radius:
 			prop.take_damage(damage, offset.normalized() * force * (1.0 - offset.length() / radius) * 0.75)
-	emit_effect("explosion", origin, {"power": force, "color": Color("ff754d")})
-	network.broadcast_match_event("camera_shake", {"strength": clampf(force / 150.0, 3.0, 8.0)})
+	emit_effect("explosion", origin, {"power": force, "radius": radius, "color": Color("ff754d")})
 
 func core_shockwave(multiplier: float) -> void:
 	var core := map_controller.get_core_position()
@@ -362,7 +432,6 @@ func core_shockwave(multiplier: float) -> void:
 			var offset: Vector2 = rigid.global_position - core
 			rigid.apply_central_impulse(offset.normalized() * clampf(1000.0 - offset.length() * 0.4, 300.0, 1000.0) * multiplier)
 	emit_effect("core_shockwave", core, {"power": 600.0 * multiplier, "color": Color("67dfff")})
-	network.broadcast_match_event("camera_shake", {"strength": 10.0})
 
 func apply_core_force(strength: float, delta: float) -> void:
 	var core := map_controller.get_core_position()
@@ -377,12 +446,20 @@ func apply_core_force(strength: float, delta: float) -> void:
 			rigid.apply_central_force(outward * strength * 1.5)
 
 func impulse_random_objects(count: int) -> void:
-	var bodies := get_tree().get_nodes_in_group("physics_objects")
-	bodies.shuffle()
+	var bodies := shuffled_with_match_rng(get_tree().get_nodes_in_group("physics_objects"))
 	for index in mini(count, bodies.size()):
-		var body := bodies[index]
+		var body: Node = bodies[index]
 		if body is RigidBody2D and is_instance_valid(body) and not (body is Weapon and body.holder_id > 0):
 			(body as RigidBody2D).apply_central_impulse(Vector2(rng.randf_range(-620, 620), rng.randf_range(-720, -180)))
+
+func shuffled_with_match_rng(values: Array) -> Array:
+	var result := values.duplicate()
+	for index in range(result.size() - 1, 0, -1):
+		var swap_index := rng.randi_range(0, index)
+		var current = result[index]
+		result[index] = result[swap_index]
+		result[swap_index] = current
+	return result
 
 func remove_weapon(weapon_id: int) -> void:
 	var weapon: Weapon = weapons.get(weapon_id)
@@ -432,7 +509,6 @@ func clear_round_entities(include_players: bool) -> void:
 		players.clear()
 
 func emit_effect(effect_type: String, at_position: Vector2, data: Dictionary) -> void:
-	audio_manager.play_event(effect_type, at_position, float(data.get("power", 1.0)))
 	if server_mode:
 		network.broadcast_match_event("effect", {"type": effect_type, "position": at_position, "data": data})
 	else:
@@ -443,8 +519,16 @@ func receive_match_event(event_name: String, payload: Dictionary) -> void:
 		_spawn_local_effect(str(payload.type), payload.position, payload.get("data", {}))
 	elif event_name == "arena_reset":
 		map_controller.reset_map()
+		_clear_client_transients()
+		if local_prediction:
+			local_prediction.reset_prediction()
+		if camera_manager:
+			camera_manager.reset_round_state()
 	elif event_name == "camera_shake" and camera_manager:
 		camera_manager.add_shake(float(payload.get("strength", 2.0)))
+		var kick_direction: Variant = payload.get("direction", Vector2.ZERO)
+		if kick_direction is Vector2:
+			camera_manager.add_impact(kick_direction, float(payload.get("kick", 0.0)))
 
 func debug_action(action: String) -> void:
 	if not server_mode:
@@ -472,7 +556,13 @@ func apply_snapshot(snapshot: Dictionary) -> void:
 	if tick <= _last_snapshot_tick:
 		return
 	_last_snapshot_tick = tick
-	_client_round_state = snapshot.get("round", _client_round_state)
+	if local_prediction:
+		local_prediction.note_snapshot(tick)
+	var next_round_state: Dictionary = snapshot.get("round", _client_round_state)
+	var round_changed := int(next_round_state.get("round", 0)) != int(_client_round_state.get("round", 0))
+	_client_round_state = next_round_state
+	if round_changed and local_prediction:
+		local_prediction.reset_prediction()
 	chaos_level = int(snapshot.get("chaos_level", 0))
 	client_chaos_events.clear()
 	for event_name: String in snapshot.get("chaos_events", []):
@@ -482,14 +572,20 @@ func apply_snapshot(snapshot: Dictionary) -> void:
 	blackout = bool(modifiers.get("blackout", false))
 	map_controller.set_moving_platforms(bool(modifiers.get("moving_platforms", false)))
 	map_controller.set_floor_panic(bool(modifiers.get("floor_panic", false)))
-	_sync_players(snapshot.get("players", []))
+	_sync_players(snapshot.get("players", []), tick)
 	_sync_weapons(snapshot.get("weapons", []))
 	_sync_projectiles(snapshot.get("projectiles", []))
 	_sync_props(snapshot.get("props", []))
 
 func _build_snapshot() -> Dictionary:
 	var player_states: Array = []
-	for player: Player in players.values(): player_states.append(player.snapshot())
+	for player: Player in players.values():
+		var state := player.snapshot()
+		state["last_processed_input_sequence"] = int(_last_processed_input_sequences.get(player.player_id, -1))
+		state["last_processed_client_time"] = int(_last_processed_client_times.get(player.player_id, -1))
+		state["grounded"] = player.is_on_floor()
+		state["on_wall"] = player.is_on_wall_only()
+		player_states.append(state)
 	var weapon_states: Array = []
 	for weapon: Weapon in weapons.values(): weapon_states.append(weapon.snapshot())
 	var projectile_states: Array = []
@@ -513,7 +609,7 @@ func _build_snapshot() -> Dictionary:
 		},
 	}
 
-func _sync_players(states: Array) -> void:
+func _sync_players(states: Array, snapshot_tick: int) -> void:
 	var seen: Dictionary = {}
 	for state: Dictionary in states:
 		var id := int(state.id)
@@ -522,8 +618,23 @@ func _sync_players(states: Array) -> void:
 		if player == null:
 			player = _create_player(id, str(state.name), false)
 			player.global_position = Vector2(float(state.x), float(state.y))
-		player.apply_network_state(state)
-	_remove_missing(players, seen)
+			if local_prediction:
+				local_prediction.register_player(player)
+		if local_prediction:
+			if id == network.local_player_id:
+				local_prediction.reconcile_local(state, snapshot_tick)
+			else:
+				local_prediction.push_remote_state(player, state, snapshot_tick)
+		else:
+			player.apply_network_state(state)
+	for id: int in players.keys().duplicate():
+		if not seen.has(id):
+			var player: Player = players[id]
+			if local_prediction:
+				local_prediction.unregister_player(id)
+			if is_instance_valid(player):
+				player.queue_free()
+			players.erase(id)
 
 func _sync_weapons(states: Array) -> void:
 	var seen: Dictionary = {}
@@ -587,10 +698,8 @@ func _create_player(player_id: int, display_name: String, authoritative: bool) -
 
 func _spawn_default_props() -> void:
 	var definitions := [
-		["crate", Vector2(420, 450)], ["crate", Vector2(470, 430)],
-		["barrel", Vector2(1080, 450)], ["crate", Vector2(1190, 675)],
-		["barrel", Vector2(1340, 675)], ["crate", Vector2(700, 745)],
-		["barrel", Vector2(875, 745)], ["crate", Vector2(250, 665)],
+		["crate", Vector2(420, 560)], ["barrel", Vector2(365, 365)],
+		["crate", Vector2(940, 560)], ["barrel", Vector2(995, 365)],
 	]
 	for definition: Array in definitions:
 		var prop: PhysicsProp = PropScript.new()
@@ -613,6 +722,60 @@ func _process_pending_bombs(delta: float) -> void:
 			spawn_projectile("chaos_bomb", 0, Vector2(float(bomb.x), MapController.SKY_Y), Vector2.DOWN, rng.randf_range(430, 620), 24.0, 820.0, Color("ff534b"))
 			_pending_bombs.erase(bomb)
 
+func _finalize_processed_inputs() -> void:
+	for player_id: int in _last_applied_inputs:
+		var command: Dictionary = _last_applied_inputs[player_id]
+		_last_processed_input_sequences[player_id] = int(command.get("sequence", -1))
+		_last_processed_client_times[player_id] = int(command.get("client_time", -1))
+	_last_applied_inputs.clear()
+
+func _process_server_input_queues() -> void:
+	if round_manager.state != "playing":
+		return
+	for player_id: int in _server_input_queues.keys():
+		var player: Player = players.get(player_id)
+		if player == null:
+			_server_input_queues.erase(player_id)
+			continue
+		var queue: Array = _server_input_queues[player_id]
+		while queue.size() > MAX_SERVER_INPUT_BACKLOG:
+			var skipped: Dictionary = queue.pop_front()
+			_last_processed_input_sequences[player_id] = int(skipped.get("sequence", -1))
+			_last_processed_client_times[player_id] = int(skipped.get("client_time", -1))
+		if queue.is_empty():
+			continue
+		var command: Dictionary = queue.pop_front()
+		player.set_network_input(command)
+		_last_applied_inputs[player_id] = command
+		_server_input_queues[player_id] = queue
+
+func _clear_queued_inputs() -> void:
+	_server_input_queues.clear()
+	_last_applied_inputs.clear()
+
+func _sanitize_input(input_state: Dictionary) -> Dictionary:
+	var sequence := int(input_state.get("sequence", -1))
+	if sequence < 0:
+		return {}
+	return {
+		"sequence": sequence,
+		"move": _finite_axis(input_state.get("move", 0.0)),
+		"jump": bool(input_state.get("jump", false)),
+		"attack": bool(input_state.get("attack", false)),
+		"pickup": bool(input_state.get("pickup", false)),
+		"throw": bool(input_state.get("throw", false)),
+		"aim_x": _finite_axis(input_state.get("aim_x", 1.0)),
+		"aim_y": _finite_axis(input_state.get("aim_y", 0.0)),
+		"client_tick": int(input_state.get("client_tick", 0)),
+		"client_time": int(input_state.get("client_time", -1)),
+	}
+
+func _finite_axis(value: Variant) -> float:
+	var number := float(value)
+	if is_nan(number) or is_inf(number):
+		return 0.0
+	return clampf(number, -1.0, 1.0)
+
 func _update_test_bots() -> void:
 	for player_id: int in bot_player_ids:
 		var player: Player = players.get(player_id)
@@ -632,10 +795,81 @@ func _update_test_bots() -> void:
 		})
 
 func _spawn_local_effect(effect_type: String, at_position: Vector2, data: Dictionary) -> void:
+	audio_manager.play_event(effect_type, at_position, float(data.get("power", 1.0)))
+	var active_effects := get_tree().get_nodes_in_group("combat_effects")
+	if active_effects.size() >= MAX_ACTIVE_EFFECTS:
+		var incoming_priority := EffectBurst.priority_for(effect_type)
+		var lowest_priority := 99
+		var lowest_effect: EffectBurst
+		for candidate: Node in active_effects:
+			if candidate is EffectBurst and not candidate.is_queued_for_deletion():
+				var effect := candidate as EffectBurst
+				if effect.visual_priority < lowest_priority:
+					lowest_priority = effect.visual_priority
+					lowest_effect = effect
+		if lowest_effect == null or lowest_priority > incoming_priority or (lowest_priority == incoming_priority and incoming_priority <= 1):
+			return
+		lowest_effect.queue_free()
 	var effect: EffectBurst = EffectBurstScript.new()
 	add_child(effect)
 	effect.global_position = at_position
 	effect.setup(effect_type, data)
+	_apply_local_feedback(effect_type, at_position, data)
+
+func _clear_client_transients() -> void:
+	for effect: Node in get_tree().get_nodes_in_group("combat_effects"):
+		if is_instance_valid(effect):
+			effect.queue_free()
+
+func _apply_local_feedback(effect_type: String, at_position: Vector2, data: Dictionary) -> void:
+	if camera_manager == null:
+		return
+	var effect_direction: Vector2 = data.get("direction_vector", Vector2.RIGHT)
+	match effect_type:
+		"muzzle":
+			var weapon: Weapon = weapons.get(int(data.get("weapon_id", 0)))
+			if weapon:
+				weapon.apply_visual_recoil(float(data.get("power", 0.0)))
+			var camera_strength := float(data.get("camera_strength", 0.0))
+			camera_manager.add_shake(camera_strength)
+			camera_manager.add_impact(-effect_direction, camera_strength * 0.72)
+		"slash":
+			var weapon: Weapon = weapons.get(int(data.get("weapon_id", 0)))
+			if weapon:
+				weapon.apply_visual_recoil(float(data.get("power", 0.0)))
+			camera_manager.add_impact(-effect_direction, 1.1)
+		"impact_player":
+			var impact_power := float(data.get("power", 0.0))
+			camera_manager.add_shake(clampf(impact_power / 260.0, 0.35, 3.2))
+			camera_manager.add_impact(-effect_direction, clampf(impact_power / 170.0, 0.7, 4.5))
+			if impact_power >= 600.0:
+				camera_manager.add_visual_hold(0.035)
+		"throw_impact":
+			camera_manager.add_shake(clampf(float(data.get("power", 0.0)) / 320.0, 0.35, 2.4))
+		"explosion":
+			var explosion_strength := clampf(float(data.get("power", 450.0)) / 150.0, 3.0, 8.0)
+			camera_manager.add_shake(explosion_strength)
+			camera_manager.add_world_impact(at_position, explosion_strength)
+			camera_manager.add_visual_hold(0.028)
+		"ko":
+			camera_manager.add_shake(7.0)
+			camera_manager.add_impact(-effect_direction, 6.0)
+			camera_manager.add_visual_hold(0.05)
+		"core_shockwave":
+			camera_manager.add_shake(10.0)
+			camera_manager.add_world_impact(at_position, 10.0)
+
+func _weapon_camera_strength(weapon_type: String) -> float:
+	match weapon_type:
+		"pistol": return 0.35
+		"rifle": return 0.55
+		"shotgun": return 2.0
+		"sniper": return 3.3
+		"rocket": return 5.0
+		"grenade": return 2.6
+		"golden": return 4.4
+		"cursed_shotgun": return 4.8
+		_: return 0.0
 
 func _read_seed_argument() -> int:
 	for argument: String in OS.get_cmdline_user_args():
